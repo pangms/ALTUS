@@ -17,7 +17,7 @@ echo "  done."
 
 echo
 echo "[2/3] CUDA sanity check..."
-python -c "
+python3 -c "
 import torch
 print(f'  torch         : {torch.__version__}')
 print(f'  cuda available: {torch.cuda.is_available()}')
@@ -32,4 +32,4 @@ echo
 echo "[3/3] Launching training..."
 echo "      Output streams below. Artifacts will land in artifacts/cloud_*."
 echo
-exec python -u scripts/train_cloud.py "$@"
+exec python3 -u scripts/train_cloud.py "$@"
