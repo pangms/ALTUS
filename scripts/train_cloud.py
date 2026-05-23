@@ -31,7 +31,7 @@ sys.stderr.reconfigure(line_buffering=True)
 
 from altus.config import ARTIFACT_DIR, AcceptanceCriteria, TrainConfig
 from altus.data import load_mnq
-from altus.features import build_features
+from altus.features import StructuralSpec, build_features
 from altus.labels import filter_labels_to_index, triple_barrier_labels
 from altus.models.hybrid import build_hybrid
 from altus.splits import purged_walk_forward
@@ -125,6 +125,13 @@ def main():
                              "  mamba = TCN + selective SSM (slow without mamba-ssm package)\n"
                              "  xlstm = TCN + xLSTM (slow without optimized kernels)\n"
                              "Default is 'tcn' for fast iteration; use 'mamba,xlstm' once kernels are wired up.")
+    parser.add_argument("--families", default="none",
+                        help="Phase A structural feature families to enable on top of price features.\n"
+                             "  none                                   = baseline (no structural; matches Stage 1)\n"
+                             "  all                                    = all 5 families enabled\n"
+                             "  session | trend | vol | exhaust | anomaly  = single-family A/B test\n"
+                             "  session,vol  (etc)                     = arbitrary combinations\n"
+                             "Used to A/B test each family's contribution per our empirical commitment.")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -154,11 +161,16 @@ def main():
         n_folds, oos_months = 1, 1
         run_tag = "quick"
 
+    structural_spec = StructuralSpec.from_string(args.families)
+
     print(f"\nrun_id={run_id}  tag={run_tag}  data=[{run_start}, {run_end}]  "
           f"folds={n_folds}  oos_months={oos_months}")
     print(f"variants: {args.variants}")
+    print(f"{structural_spec.summary()}")
 
-    artifacts_dir = ARTIFACT_DIR / f"cloud_{run_tag}_{run_id}"
+    # Tag artifact dir with the family selection so multiple A/B runs don't clobber each other
+    fam_tag = args.families.replace(",", "+") if args.families != "none" else "base"
+    artifacts_dir = ARTIFACT_DIR / f"cloud_{run_tag}_{fam_tag}_{run_id}"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     print(f"artifacts: {artifacts_dir}")
 
@@ -168,9 +180,9 @@ def main():
     print(f"loaded MNQ: {len(df):,} bars, {df.index[0]} -> {df.index[-1]}")
 
     banner("2. Features")
-    feats = build_features(df)
+    feats = build_features(df, structural_spec=structural_spec if structural_spec.enabled else None)
     n_feat = feats.shape[1]
-    print(f"features: {feats.shape[0]:,} rows × {n_feat} cols")
+    print(f"features: {feats.shape[0]:,} rows × {n_feat} cols ({structural_spec.summary()})")
 
     banner("3. Labels")
     labels = triple_barrier_labels(df)

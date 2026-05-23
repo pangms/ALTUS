@@ -157,11 +157,18 @@ class FeatureSpec:
     causal_shift: bool = True       # shift the whole matrix by 1 — see module docstring
 
 
-def build_features(df_1m: pd.DataFrame, spec: FeatureSpec | None = None) -> pd.DataFrame:
+def build_features(
+    df_1m: pd.DataFrame,
+    spec: FeatureSpec | None = None,
+    structural_spec=None,
+) -> pd.DataFrame:
     """Build the multi-timeframe feature matrix on the 1-min grid.
 
     Input: df_1m with columns ['open','high','low','close','volume'], UTC-indexed.
     Output: causally-shifted, NaN-trimmed feature DataFrame on the same 1m index.
+
+    If `structural_spec` is provided (an altus.features.StructuralSpec), the
+    enabled Phase A families are also computed and joined onto the price features.
     """
     spec = spec or FeatureSpec()
     grid = df_1m.index
@@ -174,18 +181,20 @@ def build_features(df_1m: pd.DataFrame, spec: FeatureSpec | None = None) -> pd.D
         all_blocks.append(feats_aligned)
 
     X = pd.concat(all_blocks, axis=1)
-
-    # Replace inf -> NaN before any downstream processing
     X = X.replace([np.inf, -np.inf], np.nan)
 
     if spec.causal_shift:
-        # Critical: features at row T must NOT include bar T itself, because
-        # at the moment we trade at the open of bar T, bar T hasn't happened.
         X = X.shift(1)
 
-    # Drop the warmup region where rolling windows haven't filled in.
-    X = X.dropna(how="any")
-    return X
+    # Append structural features (already causally shifted in their own module)
+    if structural_spec is not None:
+        from altus.features.structural import build_structural_features
+        struct = build_structural_features(df_1m, structural_spec)
+        struct = struct.replace([np.inf, -np.inf], np.nan)
+        if not struct.empty:
+            X = pd.concat([X, struct], axis=1)
+
+    return X.dropna(how="any")
 
 
 def feature_column_count(spec: FeatureSpec | None = None) -> int:
