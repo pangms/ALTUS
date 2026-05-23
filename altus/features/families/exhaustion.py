@@ -153,13 +153,18 @@ def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
         index=df_15m.index, dtype=np.float32,
     )
 
-    # Broadcast onto 1m grid (shift forward by TF length so we read most-recent COMPLETED bar)
-    div_5m_1m = div_5m.shift(freq=pd.Timedelta(minutes=5)).reindex(df_1m.index).ffill().fillna(0)
-    div_15m_1m = div_15m.shift(freq=pd.Timedelta(minutes=15)).reindex(df_1m.index).ffill().fillna(0)
+    # Broadcast onto 1m grid via union+ffill (handles market-closed gaps cleanly).
+    def _broadcast(s, tf_min):
+        shifted = s.shift(freq=pd.Timedelta(minutes=tf_min))
+        union_idx = shifted.index.union(df_1m.index).sort_values()
+        return shifted.reindex(union_idx).ffill().reindex(df_1m.index)
+
+    div_5m_1m = _broadcast(div_5m, 5).fillna(0)
+    div_15m_1m = _broadcast(div_15m, 15).fillna(0)
 
     # 15m BB position broadcast onto 1m
     bb_15m = _bb_position(df_15m["close"], n=20)
-    bb_15m_1m = bb_15m.shift(freq=pd.Timedelta(minutes=15)).reindex(df_1m.index).ffill()
+    bb_15m_1m = _broadcast(bb_15m, 15)
 
     # 1m-native features
     cons_color = _signed_consecutive_color(df_1m["open"], df_1m["close"])

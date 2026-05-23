@@ -136,10 +136,14 @@ def _trend_features_one_tf(df_1m: pd.DataFrame, tf_min: int, ema_n: int = 50, hu
         f"trend_{tf_min}m_hurst_raw": hurst_series,
     })
 
-    # Shift forward by tf_min and reindex onto 1m grid so each 1m bar reads
-    # the most-recently-COMPLETED higher-TF bar (causal — no look-ahead).
+    # Shift forward by tf_min so each value becomes "available" at the close of
+    # its source bar. Then broadcast onto the 1m grid via union+ffill (NOT direct
+    # reindex+ffill) — because for weekly bars, the shifted timestamps land on
+    # Sundays when MNQ is closed and don't exist in df_1m.index. The union pattern
+    # keeps the shifted values alive so ffill can propagate them forward.
     shifted = feats.shift(freq=pd.Timedelta(minutes=tf_min))
-    return shifted.reindex(df_1m.index).ffill()
+    union_idx = shifted.index.union(df_1m.index).sort_values()
+    return shifted.reindex(union_idx).ffill().reindex(df_1m.index)
 
 
 def compute(df_1m: pd.DataFrame) -> pd.DataFrame:

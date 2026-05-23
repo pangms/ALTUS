@@ -135,15 +135,21 @@ def _features_one_tf(ohlcv: pd.DataFrame, tf_min: int) -> pd.DataFrame:
 
 def _align_to_1m_grid(higher_tf_feats: pd.DataFrame, tf_min: int, grid: pd.DatetimeIndex) -> pd.DataFrame:
     """Shift higher-TF features forward by tf_min so they become 'available'
-    at their close, then reindex onto the 1m grid with forward fill.
+    at their close, then broadcast onto the 1m grid.
 
     Result: at 1m timestamp T, the higher-TF columns reflect the most recently
     COMPLETED higher-TF bar before T. No look-ahead.
+
+    We use union+ffill (NOT direct reindex+ffill) because the shifted timestamps
+    may land in market-closed windows (weekends for weekly bars) that don't exist
+    in the 1m index. Direct reindex would silently drop those values and ffill
+    would have nothing to fill from.
     """
     if tf_min == 1:
         return higher_tf_feats.reindex(grid)
     shifted = higher_tf_feats.shift(freq=pd.Timedelta(minutes=tf_min))
-    return shifted.reindex(grid).ffill()
+    union_idx = shifted.index.union(grid).sort_values()
+    return shifted.reindex(union_idx).ffill().reindex(grid)
 
 
 # ---------------------------------------------------------------------------
