@@ -1,0 +1,140 @@
+# HELIOS Phase 0 roll log
+# [discovery] total .csv.zst scanned:                 2659
+# [discovery] calendar spreads excluded (dash-syms):  2408
+# [discovery] outright contracts processed:           206
+# [discovery]   NQ:   12  ES:   12  ZN:   11  ZB:   11
+# [discovery]   GC:   42  SI:   42  6E:   33  CL:   43
+# [discovery] MNQ outrights in bundle (unused):       0
+# [discovery] non-cross-asset symbols seen:           0
+# [discovery] outrights outside bundle window (excluded): 45
+# [discovery] unexpected patterns (45):
+# [discovery]   - 6EF5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EF6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EG5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EG6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EJ5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EJ6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EK4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EK5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EK6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EN4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EN5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EN6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EQ4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EQ5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EV4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EV5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EX4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - 6EX5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIF5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIF6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIF7 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIG5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIG6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIG7 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIJ4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIJ5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIJ6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIJ7 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIK4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIK5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIK6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIK7 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIN4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIN5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIN6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIN7 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIQ4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIQ5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIQ6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIV4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIV5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIV6 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIX4 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIX5 — serial monthly on nominally-quarterly family (included)
+# [discovery]   - SIX6 — serial monthly on nominally-quarterly family (included)
+instrument,t_roll,from_contract,to_contract,gap_points,gap_pct,n_prior_bars_adjusted
+NQ,2024-06-18 23:59:00+00:00,NQM4,NQU4,-275.25,-1.3617,54930
+NQ,2024-09-17 23:59:00+00:00,NQU4,NQZ4,-234.25,-1.1921,143648
+NQ,2024-12-18 23:59:00+00:00,NQZ4,NQH5,-291.0,-1.3092,234195
+NQ,2025-03-19 23:59:00+00:00,NQH5,NQM5,-204.5,-1.0242,320029
+NQ,2025-06-17 23:59:00+00:00,NQM5,NQU5,-225.5,-1.0225,406715
+NQ,2025-09-16 23:59:00+00:00,NQU5,NQZ5,-242.0,-0.9872,495456
+NQ,2025-12-16 23:59:00+00:00,NQZ5,NQH6,-243.0,-0.961,583973
+NQ,2026-03-17 23:59:00+00:00,NQH6,NQM6,-217.5,-0.8701,670231
+ES,2024-06-17 23:59:00+00:00,ESM4,ESU4,-66.0,-1.1941,53523
+ES,2024-09-17 23:59:00+00:00,ESU4,ESZ4,-61.25,-1.0702,143582
+ES,2024-12-17 23:59:00+00:00,ESZ4,ESH5,-74.25,-1.2132,232721
+ES,2025-03-18 23:59:00+00:00,ESH5,ESM5,-51.25,-0.903,318555
+ES,2025-06-17 23:59:00+00:00,ESM5,ESU5,-53.5,-0.8804,406633
+ES,2025-09-16 23:59:00+00:00,ESU5,ESZ5,-57.25,-0.8587,495361
+ES,2025-12-16 23:59:00+00:00,ESZ5,ESH6,-55.75,-0.8138,583877
+ES,2026-03-17 23:59:00+00:00,ESH6,ESM6,-51.0,-0.7535,670169
+ZN,2024-05-30 23:52:00+00:00,ZNM4,ZNU4,-0.3125,-0.2889,33782
+ZN,2024-08-29 23:53:00+00:00,ZNU4,ZNZ4,-0.5469,-0.4803,117205
+ZN,2024-11-27 23:56:00+00:00,ZNZ4,ZNH5,-0.1719,-0.1551,200288
+ZN,2025-02-27 23:59:00+00:00,ZNH5,ZNM5,-0.0312,-0.0283,281162
+ZN,2025-05-29 23:58:00+00:00,ZNM5,ZNU5,-0.0312,-0.0283,364656
+ZN,2025-08-28 23:59:00+00:00,ZNU5,ZNZ5,-0.0469,-0.0417,445741
+ZN,2025-11-26 23:54:00+00:00,ZNZ5,ZNH6,0.0625,0.0551,525568
+ZN,2026-02-26 23:50:00+00:00,ZNH6,ZNM6,0.0625,0.0551,603995
+ZB,2024-05-30 23:36:00+00:00,ZBM4,ZBU4,-0.0938,-0.0815,30505
+ZB,2024-08-29 23:56:00+00:00,ZBU4,ZBZ4,-0.1875,-0.1516,107071
+ZB,2024-11-28 23:35:00+00:00,ZBZ4,ZBH5,-0.1875,-0.158,183944
+ZB,2025-02-27 23:54:00+00:00,ZBH5,ZBM5,0.25,0.2128,256832
+ZB,2025-05-29 23:58:00+00:00,ZBM5,ZBU5,0.375,0.3327,334876
+ZB,2025-08-28 23:58:00+00:00,ZBU5,ZBZ5,0.375,0.3271,408156
+ZB,2025-11-26 23:57:00+00:00,ZBZ5,ZBH6,0.4062,0.3458,478940
+ZB,2026-02-26 23:56:00+00:00,ZBH6,ZBM6,0.4062,0.3449,548378
+GC,2024-05-30 23:21:00+00:00,GCM4,GCQ4,-23.2,-0.9855,36399
+GC,2024-07-30 23:56:00+00:00,GCQ4,GCZ4,-47.9,-1.9702,94573
+GC,2024-11-28 23:52:00+00:00,GCZ4,GCG5,-24.3,-0.9127,212812
+GC,2025-01-30 23:12:00+00:00,GCG5,GCJ5,-23.0,-0.8099,270991
+GC,2025-03-28 20:55:00+00:00,GCJ5,GCM5,-29.2,-0.94,326927
+GC,2025-05-29 23:40:00+00:00,GCM5,GCQ5,-26.7,-0.8098,385570
+GC,2025-07-30 23:48:00+00:00,GCQ5,GCZ5,-57.4,-1.6952,445210
+GC,2025-11-26 23:46:00+00:00,GCZ5,GCG6,-37.4,-0.8932,561778
+GC,2026-01-29 23:03:00+00:00,GCG6,GCJ6,-37.4,-0.6696,620742
+GC,2026-03-29 23:59:00+00:00,GCJ6,GCM6,-31.9,-0.7036,676945
+SI,2024-04-29 23:49:00+00:00,SIK4,SIN4,-0.285,-1.0362,4384
+SI,2024-06-27 22:43:00+00:00,SIN4,SIU4,-0.335,-1.1404,61191
+SI,2024-08-29 23:38:00+00:00,SIU4,SIZ4,-0.43,-1.4403,120384
+SI,2024-11-28 16:50:00+00:00,SIZ4,SIH5,-0.415,-1.3669,206089
+SI,2025-02-27 21:56:00+00:00,SIH5,SIK5,-0.305,-0.9593,289590
+SI,2025-04-28 23:39:00+00:00,SIK5,SIN5,-0.315,-0.9447,345119
+SI,2025-06-27 20:54:00+00:00,SIN5,SIU5,-0.33,-0.9,402867
+SI,2025-08-28 20:57:00+00:00,SIU5,SIZ5,-0.51,-1.2814,460098
+SI,2025-11-26 23:53:00+00:00,SIZ5,SIH6,-0.69,-1.3079,546765
+SI,2026-02-26 23:27:00+00:00,SIH6,SIK6,-0.61,-0.6952,631921
+6E,2024-06-16 23:44:00+00:00,6EM4,6EU4,-0.0047,-0.4372,50312
+6E,2024-09-15 23:57:00+00:00,6EU4,6EZ4,-0.0041,-0.3684,136973
+6E,2024-12-15 23:54:00+00:00,6EZ4,6EH5,-0.0043,-0.4077,224927
+6E,2025-03-16 23:33:00+00:00,6EH5,6EM5,-0.0054,-0.494,310540
+6E,2025-06-15 23:55:00+00:00,6EM5,6EU5,-0.007,-0.5988,397900
+6E,2025-09-14 23:33:00+00:00,6EU5,6EZ5,-0.0062,-0.5214,485257
+6E,2025-12-14 23:50:00+00:00,6EZ5,6EH6,-0.0053,-0.4494,571711
+6E,2026-03-15 23:59:00+00:00,6EH6,6EM6,-0.005,-0.4355,656747
+CL,2024-05-19 23:59:00+00:00,CLM4,CLN4,0.42,0.5276,24236
+CL,2024-06-17 23:59:00+00:00,CLN4,CLQ4,0.52,0.6599,52425
+CL,2024-07-18 23:59:00+00:00,CLQ4,CLU4,1.51,1.8573,82901
+CL,2024-08-16 20:59:00+00:00,CLU4,CLV4,1.11,1.47,111231
+CL,2024-09-19 23:59:00+00:00,CLV4,CLX4,0.91,1.2859,143294
+CL,2024-10-20 23:57:00+00:00,CLX4,CLZ4,0.54,0.7842,171914
+CL,2024-11-18 23:56:00+00:00,CLZ4,CLF5,0.03,0.0439,200458
+CL,2024-12-18 21:59:00+00:00,CLF5,CLG5,0.47,0.6692,229540
+CL,2025-01-17 21:59:00+00:00,CLG5,CLH5,0.77,0.9923,256238
+CL,2025-02-18 23:58:00+00:00,CLH5,CLJ5,0.01,0.014,285863
+CL,2025-03-18 23:59:00+00:00,CLJ5,CLK5,0.16,0.2364,312952
+CL,2025-04-17 20:59:00+00:00,CLK5,CLM5,0.67,1.0528,342719
+CL,2025-05-18 23:58:00+00:00,CLM5,CLN5,0.55,0.8871,369957
+CL,2025-06-17 23:59:00+00:00,CLN5,CLQ5,1.49,2.0775,399729
+CL,2025-07-20 23:58:00+00:00,CLQ5,CLU5,1.27,1.9167,430238
+CL,2025-08-18 23:56:00+00:00,CLU5,CLV5,0.76,1.2119,458195
+CL,2025-09-19 20:55:00+00:00,CLV5,CLX5,0.34,0.5428,489195
+CL,2025-10-17 20:59:00+00:00,CLX5,CLZ5,0.44,0.7711,516045
+CL,2025-11-19 23:47:00+00:00,CLZ5,CLF6,0.1,0.1652,546781
+CL,2025-12-17 23:59:00+00:00,CLF6,CLG6,0.14,0.2481,572812
+CL,2026-01-16 21:59:00+00:00,CLG6,CLH6,0.12,0.2023,599488
+CL,2026-02-18 23:59:00+00:00,CLH6,CLJ6,0.12,0.1875,630509
+CL,2026-03-18 23:59:00+00:00,CLJ6,CLK6,0.8,0.8097,658105
+CL,2026-04-17 20:59:00+00:00,CLK6,CLM6,2.52,3.0897,686905

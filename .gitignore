@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+.ipynb_checkpoints/
+
+# Training artifacts (model weights, metrics dumps, plots)
+artifacts/
+
+# Large raw OHLCV CSVs — keep only parquets in git (mnq_1min.csv is >100MB).
+# roll_log.csv is small + informational so we keep it.
+data/*_1min.csv
