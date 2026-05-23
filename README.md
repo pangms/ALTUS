@@ -10,7 +10,7 @@ Spin up any pod with a PyTorch 2.x image + CUDA GPU (RTX 4090 is plenty
 for our model size). In the pod's web terminal:
 
 ```bash
-git clone https://github.com/<your-username>/ALTUS.git
+git clone https://github.com/pangms/ALTUS.git
 cd ALTUS
 bash scripts/setup_cloud.sh
 ```
