@@ -119,8 +119,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--full", action="store_true",
                         help="Full 5yr data + 5-fold walk-forward + 6mo OOS (vs 1yr/1fold/1mo default)")
-    parser.add_argument("--variants", default="mamba,xlstm",
-                        help="Comma-separated long-context branches to train")
+    parser.add_argument("--variants", default="tcn",
+                        help="Comma-separated long-context branches to train: tcn | mamba | xlstm.\n"
+                             "  tcn   = TCN-only (no long-context branch; fully parallel, fast on CUDA)\n"
+                             "  mamba = TCN + selective SSM (slow without mamba-ssm package)\n"
+                             "  xlstm = TCN + xLSTM (slow without optimized kernels)\n"
+                             "Default is 'tcn' for fast iteration; use 'mamba,xlstm' once kernels are wired up.")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -185,9 +189,11 @@ def main():
     all_results = {}
     for variant in args.variants.split(","):
         variant = variant.strip()
-        if variant not in ("mamba", "xlstm"):
+        if variant not in ("mamba", "xlstm", "tcn"):
             print(f"skipping unknown variant: {variant}")
             continue
+        # 'tcn' selects the no-long-context (TCN-only) build in HybridLayer1
+        long_context_for_model = "none" if variant == "tcn" else variant
 
         all_results[variant] = {"folds": []}
         for fold_idx, fold in enumerate(splits.folds):
@@ -206,7 +212,7 @@ def main():
 
             model = build_hybrid(
                 n_features=n_feat,
-                long_context=variant,
+                long_context=long_context_for_model,
                 d_model=FULL_CFG["d_model"],
                 seq_len=FULL_CFG["seq_len"],
                 tcn_n_blocks=FULL_CFG["tcn_n_blocks"],
@@ -223,7 +229,7 @@ def main():
                 early_stop_patience=FULL_CFG["early_stop_patience"],
                 device=str(device).split(":")[0],
             )
-            result = train_model(model, train_ds, val_ds, cfg=cfg, verbose=True, show_progress=False)
+            result = train_model(model, train_ds, val_ds, cfg=cfg, verbose=True, show_progress=True)
             print(f"  trained in {(time.time() - f_t0)/60:.1f} min, "
                   f"best epoch {result.best_epoch}, best mean AUC {result.best_val_metric:.4f}")
 
@@ -272,7 +278,7 @@ def main():
             # Re-load best weights from the last fold
             last_ckpt = artifacts_dir / f"{variant}_fold{last_fold.fold}_best.pt"
             model = build_hybrid(
-                n_features=n_feat, long_context=variant,
+                n_features=n_feat, long_context=long_context_for_model,
                 d_model=FULL_CFG["d_model"], seq_len=FULL_CFG["seq_len"],
                 tcn_n_blocks=FULL_CFG["tcn_n_blocks"],
                 mamba_n_blocks=FULL_CFG["mamba_n_blocks"],

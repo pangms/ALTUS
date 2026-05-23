@@ -67,8 +67,8 @@ class ALTUSDataset(Dataset):
         pos = self.sample_positions[idx]
         feat_end = self._feature_pos_per_label[pos]
         feat_start = feat_end - self.seq_len + 1
-        # (L, F)
-        window = self._features_np[feat_start : feat_end + 1]
+        # (L, F)  — .copy() makes the slice writable so torch.from_numpy doesn't warn
+        window = self._features_np[feat_start : feat_end + 1].copy()
         return {
             "x": torch.from_numpy(window),
             "long_tp": torch.tensor(self._labels.long_tp[pos], dtype=torch.float32),

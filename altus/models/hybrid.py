@@ -70,15 +70,20 @@ class _AttentionPool(nn.Module):
 
 
 class HybridLayer1(nn.Module):
-    """ModernTCN + (Mamba | xLSTM) peer branches with fused multi-head output."""
+    """ModernTCN + (Mamba | xLSTM | none) peer branches with fused multi-head output.
+
+    `long_context='none'` skips the long-context branch entirely (TCN-only). Useful
+    when the sequential-scan branches are too slow on the available hardware — gives
+    a strong parallel baseline that validates the rest of the pipeline.
+    """
 
     def __init__(self, cfg: ModelConfig, long_context: str = "mamba") -> None:
         super().__init__()
-        assert long_context in ("mamba", "xlstm"), f"unknown long_context: {long_context}"
+        assert long_context in ("mamba", "xlstm", "none"), f"unknown long_context: {long_context}"
         self.cfg = cfg
         self.long_context_kind = long_context
 
-        # Peer branch 1: ModernTCN (local patterns)
+        # Peer branch 1: ModernTCN (local patterns) — always present
         self.tcn = ModernTCNEncoder(
             in_features=cfg.n_features_in,
             d_model=cfg.d_model,
@@ -88,8 +93,9 @@ class HybridLayer1(nn.Module):
             dw_expansion=cfg.tcn_dw_expansion,
             pw_expansion=cfg.tcn_pw_expansion,
         )
+        self.tcn_pool = _AttentionPool(cfg.d_model)
 
-        # Peer branch 2: long-context (Mamba or xLSTM)
+        # Peer branch 2: long-context (optional)
         if long_context == "mamba":
             self.long_ctx = MambaEncoder(
                 in_features=cfg.n_features_in,
@@ -99,21 +105,25 @@ class HybridLayer1(nn.Module):
                 d_conv=cfg.mamba_d_conv,
                 expand=cfg.mamba_expand,
             )
-        else:
+            self.ctx_pool = _AttentionPool(cfg.d_model)
+            fusion_input_dim = 2 * cfg.d_model
+        elif long_context == "xlstm":
             self.long_ctx = XLSTMEncoder(
                 in_features=cfg.n_features_in,
                 d_model=cfg.d_model,
                 n_blocks=cfg.xlstm_n_blocks,
                 n_heads=cfg.xlstm_n_heads,
             )
-
-        # Pool each branch to a single token, then fuse.
-        self.tcn_pool = _AttentionPool(cfg.d_model)
-        self.ctx_pool = _AttentionPool(cfg.d_model)
+            self.ctx_pool = _AttentionPool(cfg.d_model)
+            fusion_input_dim = 2 * cfg.d_model
+        else:  # "none" — TCN-only
+            self.long_ctx = None
+            self.ctx_pool = None
+            fusion_input_dim = cfg.d_model
 
         # Fusion MLP
         self.fusion = nn.Sequential(
-            nn.Linear(2 * cfg.d_model, cfg.fusion_hidden),
+            nn.Linear(fusion_input_dim, cfg.fusion_hidden),
             nn.GELU(),
             nn.Dropout(cfg.fusion_dropout),
             nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden),
@@ -122,23 +132,23 @@ class HybridLayer1(nn.Module):
         )
 
         # Output heads
-        self.head_cls = nn.Linear(cfg.fusion_hidden, cfg.n_class_heads)   # 2: long_tp, short_tp
-        # Regression heads use softplus to enforce non-negative MFE/MAE (they are magnitudes)
-        self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads)     # 4: mfe_L, mae_L, mfe_S, mae_S
+        self.head_cls = nn.Linear(cfg.fusion_hidden, cfg.n_class_heads)
+        self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads)
 
     def forward(self, x: torch.Tensor) -> HybridOutputs:
-        # x: (B, L, F)
-        h_tcn = self.tcn(x)              # (B, L/P, D)
-        h_ctx = self.long_ctx(x)         # (B, L, D)
+        h_tcn = self.tcn(x)
+        z_tcn = self.tcn_pool(h_tcn)
 
-        z_tcn = self.tcn_pool(h_tcn)     # (B, D)
-        z_ctx = self.ctx_pool(h_ctx)     # (B, D)
+        if self.long_ctx is None:
+            z = z_tcn
+        else:
+            h_ctx = self.long_ctx(x)
+            z_ctx = self.ctx_pool(h_ctx)
+            z = torch.cat([z_tcn, z_ctx], dim=-1)
 
-        z = torch.cat([z_tcn, z_ctx], dim=-1)
         z = self.fusion(z)
-
         cls = self.head_cls(z)
-        reg = torch.nn.functional.softplus(self.head_reg(z))  # non-negative magnitudes
+        reg = torch.nn.functional.softplus(self.head_reg(z))
 
         return HybridOutputs(
             long_tp_logit=cls[:, 0],
