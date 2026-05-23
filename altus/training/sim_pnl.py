@@ -101,13 +101,18 @@ def simulate_trading(
         take_long = (long_p > cfg.enter_threshold) & (short_p < cfg.avoid_threshold)
         take_short = (short_p > cfg.enter_threshold) & (long_p < cfg.avoid_threshold)
     elif cfg.mode == "percentile":
-        # Threshold = the (1 - p)th quantile of the prediction distribution.
+        # Threshold = the (1 - p)th quantile of the prediction distribution per side.
         long_enter_t = float(np.quantile(long_p, 1.0 - cfg.enter_percentile))
         short_enter_t = float(np.quantile(short_p, 1.0 - cfg.enter_percentile))
-        long_avoid_t = float(np.quantile(long_p, cfg.avoid_percentile))
-        short_avoid_t = float(np.quantile(short_p, cfg.avoid_percentile))
-        take_long = (long_p >= long_enter_t) & (short_p <= short_avoid_t)
-        take_short = (short_p >= short_enter_t) & (long_p <= long_avoid_t)
+        # Take a side when:
+        #   (a) it clears the top-K confidence threshold for that side
+        #   (b) the OPPOSITE side is NOT also clearing its top-K (no conflicting signals)
+        # This is monotonic in K (top 5% always ⊆ top 10%) and produces ~K% trade frequency
+        # absent perfectly aligned conflicts — far more honest than the old dual-quantile rule.
+        long_strong = long_p >= long_enter_t
+        short_strong = short_p >= short_enter_t
+        take_long = long_strong & ~short_strong
+        take_short = short_strong & ~long_strong
     else:
         raise ValueError(f"unknown sim mode: {cfg.mode}")
     # In the rare both-true case, take the higher-prob side; suppress conflicts.
