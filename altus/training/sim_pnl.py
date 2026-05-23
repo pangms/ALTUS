@@ -39,15 +39,20 @@ class SimConfig:
       * Absolute thresholds (mode='absolute'): enter if P > enter_threshold and
         the opposite-side P < avoid_threshold. Requires calibrated probabilities.
       * Percentile thresholds (mode='percentile'): trade the top `enter_percentile`%
-        of signals per side (and avoid_percentile% caps the conflict side). Robust
-        to miscalibration — works on rankings, not probability magnitudes.
+        of signals per side by rank. Robust to miscalibration AND isotonic
+        calibration ties.
     """
     mode: str = "absolute"
     enter_threshold: float = 0.55
     avoid_threshold: float = 0.50
     enter_percentile: float = 0.10   # top 10% of signals
-    avoid_percentile: float = 0.50   # opposite-side must be below median
+    avoid_percentile: float = 0.50   # (legacy; unused in new rank-based logic)
     timeout_assume_close: bool = True
+    # Starting capital baseline for drawdown % — TopStep Combine default.
+    # Without this, drawdown % is computed against the running equity peak, which
+    # produces nonsensical numbers (>1000%) for losing strategies where the peak
+    # is tiny early before everything falls.
+    starting_capital_usd: float = 50_000.0
 
 
 @dataclass
@@ -100,26 +105,33 @@ def simulate_trading(
     if cfg.mode == "absolute":
         take_long = (long_p > cfg.enter_threshold) & (short_p < cfg.avoid_threshold)
         take_short = (short_p > cfg.enter_threshold) & (long_p < cfg.avoid_threshold)
+        # Conflict resolution: if both true (shouldn't happen with proper thresholds), take higher P
+        both = take_long & take_short
+        if both.any():
+            take_long = take_long & (~both | (long_p >= short_p))
+            take_short = take_short & (~both | (short_p > long_p))
     elif cfg.mode == "percentile":
-        # Threshold = the (1 - p)th quantile of the prediction distribution per side.
-        long_enter_t = float(np.quantile(long_p, 1.0 - cfg.enter_percentile))
-        short_enter_t = float(np.quantile(short_p, 1.0 - cfg.enter_percentile))
-        # Take a side when:
-        #   (a) it clears the top-K confidence threshold for that side
-        #   (b) the OPPOSITE side is NOT also clearing its top-K (no conflicting signals)
-        # This is monotonic in K (top 5% always ⊆ top 10%) and produces ~K% trade frequency
-        # absent perfectly aligned conflicts — far more honest than the old dual-quantile rule.
-        long_strong = long_p >= long_enter_t
-        short_strong = short_p >= short_enter_t
-        take_long = long_strong & ~short_strong
-        take_short = short_strong & ~long_strong
+        # Rank-based top-K selection (NOT quantile threshold).
+        #
+        # Why: after isotonic calibration, the probability vector contains many ties
+        # (isotonic produces a step function — entire buckets collapse onto a single
+        # calibrated value). A `prob >= np.quantile(prob, 0.99)` test then matches a
+        # whole tied bucket — could be 10% of samples instead of 1%. The rank-based
+        # approach takes exactly N samples by descending order, guaranteed.
+        n_take = max(1, int(np.ceil(cfg.enter_percentile * n)))
+        # argpartition is O(n) vs full sort O(n log n) — faster for large n
+        long_top_idx = np.argpartition(-long_p, n_take)[:n_take]
+        short_top_idx = np.argpartition(-short_p, n_take)[:n_take]
+        long_topk = np.zeros(n, dtype=bool)
+        short_topk = np.zeros(n, dtype=bool)
+        long_topk[long_top_idx] = True
+        short_topk[short_top_idx] = True
+        # Conflict avoidance: skip bars that are in BOTH top-K (model is confused / no clean signal)
+        conflict = long_topk & short_topk
+        take_long = long_topk & ~conflict
+        take_short = short_topk & ~conflict
     else:
         raise ValueError(f"unknown sim mode: {cfg.mode}")
-    # In the rare both-true case, take the higher-prob side; suppress conflicts.
-    both = take_long & take_short
-    if both.any():
-        take_long = take_long & (~both | (long_p >= short_p))
-        take_short = take_short & (~both | (short_p > long_p))
 
     # Realized point PnL per trade:
     #  - if TP hit: +TP_POINTS
@@ -188,13 +200,15 @@ def simulate_trading(
         sharpe = 0.0
         sortino = 0.0
 
-    # Equity curve & drawdown
+    # Equity curve & drawdown.
+    # DD% is computed against starting capital (not running peak) — the running-peak
+    # version produces nonsensical numbers for losing strategies (peak is tiny if
+    # reached early then everything falls, so dd/peak explodes past 100%).
     equity = daily.cumsum()
     peak = equity.cummax()
     dd = peak - equity
     max_dd_usd = float(dd.max())
-    peak_max = float(peak.max())
-    max_dd_pct = max_dd_usd / peak_max if peak_max > 0 else 0.0
+    max_dd_pct = max_dd_usd / cfg.starting_capital_usd
 
     # Monthly stability
     monthly = daily.resample("1ME").sum()

@@ -92,6 +92,7 @@ class HybridLayer1(nn.Module):
             kernel_size=cfg.tcn_kernel_size,
             dw_expansion=cfg.tcn_dw_expansion,
             pw_expansion=cfg.tcn_pw_expansion,
+            dropout=cfg.tcn_dropout,
         )
         self.tcn_pool = _AttentionPool(cfg.d_model)
 
@@ -104,6 +105,7 @@ class HybridLayer1(nn.Module):
                 d_state=cfg.mamba_d_state,
                 d_conv=cfg.mamba_d_conv,
                 expand=cfg.mamba_expand,
+                dropout=cfg.mamba_dropout,
             )
             self.ctx_pool = _AttentionPool(cfg.d_model)
             fusion_input_dim = 2 * cfg.d_model
@@ -113,6 +115,7 @@ class HybridLayer1(nn.Module):
                 d_model=cfg.d_model,
                 n_blocks=cfg.xlstm_n_blocks,
                 n_heads=cfg.xlstm_n_heads,
+                dropout=cfg.xlstm_dropout,
             )
             self.ctx_pool = _AttentionPool(cfg.d_model)
             fusion_input_dim = 2 * cfg.d_model

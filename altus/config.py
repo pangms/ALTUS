@@ -99,7 +99,10 @@ class ModelConfig:
 
     # Fusion
     fusion_hidden: int = 192
-    fusion_dropout: float = 0.15
+    fusion_dropout: float = 0.30   # was 0.15 — increased to fight overfitting
+    tcn_dropout: float = 0.30      # was hardcoded 0.10 in modern_tcn.py
+    mamba_dropout: float = 0.10
+    xlstm_dropout: float = 0.10
 
     # Output heads — 6 learned outputs:
     #   2 binary (long_tp, short_tp), 4 regression (mfe_long, mae_long, mfe_short, mae_short)
@@ -115,8 +118,10 @@ class TrainConfig:
     batch_size: int = 256
     n_epochs: int = 20
     lr: float = 1e-3
-    weight_decay: float = 1e-5
+    weight_decay: float = 1e-4     # was 1e-5 — stronger L2 to fight overfitting
     grad_clip: float = 1.0
+    label_smoothing: float = 0.05  # softens BCE targets (1 -> 0.95, 0 -> 0.05) — reduces memorization
+    input_feature_dropout: float = 0.05  # randomly zero this fraction of features per batch in training
     # Multi-task loss weights: classification dominates because that's what we trade on,
     # but the regression heads serve as auxiliary regularization for the shared encoder.
     cls_loss_weight: float = 1.0

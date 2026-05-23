@@ -24,7 +24,7 @@ def _select_device(preferred: str) -> torch.device:
 
 
 def _multi_task_loss(
-    out, batch, cls_w: float, reg_w: float, reg_scale: float = 30.0
+    out, batch, cls_w: float, reg_w: float, reg_scale: float = 30.0, label_smoothing: float = 0.0
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """BCE on the classification heads, Huber on the regression heads.
 
@@ -33,12 +33,19 @@ def _multi_task_loss(
     same order of magnitude as the BCE loss. Otherwise the raw-points Huber
     swamps the classification gradient and the head we actually trade on is
     undertrained.
+
+    Label smoothing softens hard 0/1 targets to (eps, 1-eps), reducing the
+    model's ability to memorize and improving calibration.
     """
     bce = nn.BCEWithLogitsLoss()
     huber = nn.HuberLoss(delta=1.0)
 
-    l_long = bce(out.long_tp_logit, batch["long_tp"])
-    l_short = bce(out.short_tp_logit, batch["short_tp"])
+    # Apply label smoothing to the classification targets
+    long_tgt = batch["long_tp"] * (1 - 2 * label_smoothing) + label_smoothing
+    short_tgt = batch["short_tp"] * (1 - 2 * label_smoothing) + label_smoothing
+
+    l_long = bce(out.long_tp_logit, long_tgt)
+    l_short = bce(out.short_tp_logit, short_tgt)
     # Normalize both predictions and targets to the same scale before Huber.
     l_mfeL = huber(out.mfe_long / reg_scale, batch["mfe_long"] / reg_scale)
     l_maeL = huber(out.mae_long / reg_scale, batch["mae_long"] / reg_scale)
@@ -146,8 +153,17 @@ def train_model(
         for batch in iter_:
             batch = {k: v.to(device) for k, v in batch.items()}
             optimizer.zero_grad()
+            # Input feature dropout — randomly zero a fraction of features per batch
+            # (a cheap form of data augmentation that reduces overfitting to specific feature combos)
+            if cfg.input_feature_dropout > 0:
+                x = batch["x"]
+                mask = torch.rand_like(x[:, :1, :]) > cfg.input_feature_dropout
+                batch["x"] = x * mask
             out = model(batch["x"])
-            loss, parts = _multi_task_loss(out, batch, cfg.cls_loss_weight, cfg.reg_loss_weight)
+            loss, parts = _multi_task_loss(
+                out, batch, cfg.cls_loss_weight, cfg.reg_loss_weight,
+                label_smoothing=cfg.label_smoothing,
+            )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
