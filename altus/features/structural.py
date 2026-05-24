@@ -33,6 +33,7 @@ from altus.features.families import (
     round_levels,
     session_anatomy,
     session_time,
+    simmtm,
     sweep_detection,
     tape_rhythm,
     trend_hurst,
@@ -77,6 +78,9 @@ _FAMILY_REGISTRY = {
     # Kronos: cache-only at training time. Requires running
     # scripts/build_kronos_cache.py once before enabling.
     "kronos":    kronos,
+    # Phase K: SimMTM self-supervised embeddings — Q27 (pattern similarity).
+    # Cache-only — requires pretrain_simmtm.py + build_simmtm_cache.py.
+    "simmtm":    simmtm,               # 96-D SSL embedding per bar
 }
 
 
