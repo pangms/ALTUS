@@ -1,8 +1,24 @@
-"""Central configuration for ALTUS Layer 1.
+"""Central configuration for ALTUS.
 
 Single source of truth for instrument constants, label parameters, model
 hyperparameters, and run defaults. Anything that another module reads should
 live here so we don't scatter magic numbers.
+
+LAYER 1 v2 FINAL (locked 2026-05-24 after Phase A sweep + RevIN A/B):
+  Architecture:  ModernTCN encoder only (no Mamba/xLSTM/PatchTST/Kronos)
+  Input features: 52 multi-TF price features + structural features from
+                  vol, trend, anomaly Phase A families (22 features) = 74 total
+  Normalization:  RevIN per-instance + isotonic post-calibration
+  Heads:          2 binary (long_tp, short_tp) + 4 regression (MFE/MAE)
+  Loss:           Multi-task BCE + Huber with label smoothing
+  Regularization: dropout 0.30, weight_decay 1e-4, label smoothing 0.05
+  Performance:    OOS mean AUC 0.638, top-1% win rate 0.506 (3yr/3fold)
+
+DROPPED FROM v2 (didn't earn their place per empirical bar):
+  - session, exhaust structural families
+  - Mamba/xLSTM long-context branches (CUDA-kernel speed issues)
+  - PatchTST (Kronos planned as replacement, then deferred)
+  - Kronos (deferred — Layer 2 has higher expected lift)
 """
 from __future__ import annotations
 
@@ -70,8 +86,13 @@ SEQ_LEN_BARS = 240               # context window length the model sees (1m bars
 ROLL_NORM_WINDOW = 1440          # 1 day of 1m bars for rolling z-score normalization
 
 
+# Layer 1 v2 final: survivors of Phase A sweep. Comma-separated string passed
+# to StructuralSpec.from_string. Used by train_layer1_final.py.
+LAYER1_V2_STRUCTURAL_FAMILIES = "vol,trend,anomaly"
+
+
 # ---------------------------------------------------------------------------
-# Model defaults
+# Layer 1 Model defaults
 # ---------------------------------------------------------------------------
 @dataclass
 class ModelConfig:
@@ -117,7 +138,45 @@ class ModelConfig:
 
 
 # ---------------------------------------------------------------------------
-# Training defaults
+# Layer 2 Model defaults — meta-labeling network
+# ---------------------------------------------------------------------------
+@dataclass
+class Layer2Config:
+    """Meta-labeling network. Small MLP that scores Layer 1 candidate signals.
+
+    Input contract: feature vector built from Layer 1's 6 outputs + derived
+    aggregates + structural features at the same bar. See altus/models/layer2.py.
+    Output: P(profitable_trade) — calibrated, optionally conformal-wrapped.
+    """
+    input_dim: int = 0          # filled at build time from training data
+    hidden_dim: int = 64
+    n_hidden_layers: int = 2
+    dropout: float = 0.30
+    use_attention_pool: bool = False  # over context features; simple MLP for v1
+
+
+@dataclass
+class Layer2TrainConfig:
+    batch_size: int = 1024
+    n_epochs: int = 30
+    lr: float = 1e-3
+    weight_decay: float = 1e-4
+    grad_clip: float = 1.0
+    early_stop_patience: int = 5
+    label_smoothing: float = 0.05
+    cal_holdout_frac: float = 0.15
+    # Selection of Layer 1 candidates to train Layer 2 on. Two modes:
+    #   "top_k_percent": train Layer 2 only on bars where Layer 1's max prob is
+    #                    in the top K% — these are the "would have traded" candidates
+    #   "all_bars":      train on every bar (treats Layer 1's prob as a feature)
+    # For meta-labeling, "top_k_percent" is more honest because it focuses on the
+    # candidate-selection problem we actually face at inference.
+    candidate_mode: str = "top_k_percent"
+    candidate_top_k: float = 0.20  # top 20% of Layer 1 signals as candidates
+
+
+# ---------------------------------------------------------------------------
+# Training defaults (Layer 1)
 # ---------------------------------------------------------------------------
 @dataclass
 class TrainConfig:
@@ -154,4 +213,6 @@ class AcceptanceCriteria:
 
 DEFAULT_MODEL_CFG = ModelConfig()
 DEFAULT_TRAIN_CFG = TrainConfig()
+DEFAULT_LAYER2_CFG = Layer2Config()
+DEFAULT_LAYER2_TRAIN_CFG = Layer2TrainConfig()
 DEFAULT_ACCEPTANCE = AcceptanceCriteria()

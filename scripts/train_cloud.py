@@ -261,6 +261,22 @@ def main():
             ckpt_path = artifacts_dir / f"{variant}_fold{fold.fold}_best.pt"
             torch.save(model.state_dict(), ckpt_path)
 
+            # Save val predictions + truths for Layer 2 training downstream
+            # (Layer 2 needs L1 predictions on data L1 didn't train on; val is exactly that)
+            val_dump = {
+                "fold": int(fold.fold),
+                "val_positions": val_ds.sample_positions.astype(np.int64),
+                "val_preds_raw": {k: result.val_preds[k].astype(np.float32) for k in result.val_preds},
+                "val_truths": {k: result.val_truths[k] for k in result.val_truths},
+            }
+            np.savez_compressed(
+                artifacts_dir / f"{variant}_fold{fold.fold}_val_preds.npz",
+                **{f"val_preds_{k}": v for k, v in val_dump["val_preds_raw"].items()},
+                **{f"val_truths_{k}": v for k, v in val_dump["val_truths"].items()},
+                val_positions=val_dump["val_positions"],
+                fold=val_dump["fold"],
+            )
+
             # Calibration on cal-fit slice
             cal_loader = DataLoader(cal_fit_ds, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate)
             cal_preds, cal_truths = _predict(model, cal_loader, device)
