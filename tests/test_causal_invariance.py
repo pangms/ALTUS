@@ -39,6 +39,7 @@ from altus.data.loader import load_mnq
 from altus.features.families import (
     absorption,
     anomaly,
+    bocpd_regime,
     corr_regime,
     cross_asset,
     exhaustion,
@@ -96,6 +97,8 @@ FAMILIES = {
     "tape_rhythm":          tape_rhythm,
     "flow_acceleration":    flow_acceleration,
     "expectation_surprise": expectation_surprise,
+    # Phase F:
+    "bocpd_regime":         bocpd_regime,
     # kronos deliberately omitted: cache lookup, no causality risk.
 }
 
@@ -172,7 +175,7 @@ def test_structural_orchestrator(df: pd.DataFrame) -> bool:
     # computation, so no causality risk; unavailable in test env.
     spec = StructuralSpec.from_string(
         "session,trend,vol,exhaust,anomaly,cross,levels,liquidity,sweep,profile,flow,"
-        "round,mtf,absorp,pvd,extension,vreg,sanat,creg,lasym,rhythm,facc,surprise"
+        "round,mtf,absorp,pvd,extension,vreg,sanat,creg,lasym,rhythm,facc,surprise,bocpd"
     )
     spec.causal_shift = False
     try:

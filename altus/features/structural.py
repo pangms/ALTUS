@@ -16,6 +16,7 @@ import pandas as pd
 from altus.features.families import (
     absorption,
     anomaly,
+    bocpd_regime,
     corr_regime,
     cross_asset,
     exhaustion,
@@ -70,6 +71,9 @@ _FAMILY_REGISTRY = {
     "rhythm":    tape_rhythm,          # Q29 — tape steady vs spasmodic (3 feats)
     "facc":      flow_acceleration,    # Q32 — second derivative of flow imbalance (3 feats)
     "surprise":  expectation_surprise, # Q33 — actual vs conditional-expected (4 feats)
+    # Phase F: BOCPD multi-timescale regime detector — Q19/Q20.
+    # Features only, never a gate, per the [[architecture-surfer-principle]].
+    "bocpd":     bocpd_regime,         # 5m/60m/4h regime age + change-prob + entropy (9 feats)
     # Kronos: cache-only at training time. Requires running
     # scripts/build_kronos_cache.py once before enabling.
     "kronos":    kronos,
