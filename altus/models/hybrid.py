@@ -36,6 +36,11 @@ class HybridOutputs:
     mae_long: torch.Tensor
     mfe_short: torch.Tensor
     mae_short: torch.Tensor
+    # Fusion embedding: the (B, fusion_hidden) vector right before the output
+    # heads. Captures the model's compressed representation of the input
+    # window. Optional — only populated if `return_embedding=True` is passed
+    # to forward(). Used as additional input to Layer 2 meta-labeling.
+    fusion_embedding: torch.Tensor | None = None
 
     @property
     def long_tp_prob(self) -> torch.Tensor:
@@ -46,7 +51,7 @@ class HybridOutputs:
         return torch.sigmoid(self.short_tp_logit)
 
     def as_dict(self) -> dict[str, torch.Tensor]:
-        return {
+        d = {
             "long_tp_logit": self.long_tp_logit,
             "short_tp_logit": self.short_tp_logit,
             "mfe_long": self.mfe_long,
@@ -54,6 +59,9 @@ class HybridOutputs:
             "mfe_short": self.mfe_short,
             "mae_short": self.mae_short,
         }
+        if self.fusion_embedding is not None:
+            d["fusion_embedding"] = self.fusion_embedding
+        return d
 
 
 class _AttentionPool(nn.Module):
@@ -147,7 +155,7 @@ class HybridLayer1(nn.Module):
         self.head_cls = nn.Linear(cfg.fusion_hidden, cfg.n_class_heads)
         self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads)
 
-    def forward(self, x: torch.Tensor) -> HybridOutputs:
+    def forward(self, x: torch.Tensor, return_embedding: bool = False) -> HybridOutputs:
         if self.revin is not None:
             x = self.revin(x, mode="norm")
         h_tcn = self.tcn(x)
@@ -160,6 +168,7 @@ class HybridLayer1(nn.Module):
             z_ctx = self.ctx_pool(h_ctx)
             z = torch.cat([z_tcn, z_ctx], dim=-1)
 
+        # Fusion MLP → (B, fusion_hidden). This is the embedding we expose to L2.
         z = self.fusion(z)
         cls = self.head_cls(z)
         reg = torch.nn.functional.softplus(self.head_reg(z))
@@ -171,6 +180,7 @@ class HybridLayer1(nn.Module):
             mae_long=reg[:, 1],
             mfe_short=reg[:, 2],
             mae_short=reg[:, 3],
+            fusion_embedding=z if return_embedding else None,
         )
 
 

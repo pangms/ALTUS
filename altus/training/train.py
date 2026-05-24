@@ -68,15 +68,27 @@ def _multi_task_loss(
 
 
 @torch.no_grad()
-def _predict(model: HybridLayer1, loader: DataLoader, device: torch.device) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+def _predict(
+    model: HybridLayer1,
+    loader: DataLoader,
+    device: torch.device,
+    return_embeddings: bool = False,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Run inference, collect predictions + optional fusion embeddings.
+
+    When `return_embeddings=True`, the returned `preds` dict will include a
+    'fusion_embedding' array of shape (N, fusion_hidden). For our default
+    config that's (N, 192). Saved as float16 by callers to halve disk space.
+    """
     model.eval()
     keys_pred = ["long_tp_prob", "short_tp_prob", "mfe_long", "mae_long", "mfe_short", "mae_short"]
     keys_true = ["long_tp", "short_tp", "mfe_long", "mae_long", "mfe_short", "mae_short"]
     preds_buf = {k: [] for k in keys_pred}
     truths_buf = {k: [] for k in keys_true}
+    emb_buf: list[np.ndarray] = []
     for batch in loader:
         x = batch["x"].to(device)
-        out = model(x)
+        out = model(x, return_embedding=return_embeddings)
         preds_buf["long_tp_prob"].append(out.long_tp_prob.cpu().numpy())
         preds_buf["short_tp_prob"].append(out.short_tp_prob.cpu().numpy())
         preds_buf["mfe_long"].append(out.mfe_long.cpu().numpy())
@@ -85,8 +97,12 @@ def _predict(model: HybridLayer1, loader: DataLoader, device: torch.device) -> t
         preds_buf["mae_short"].append(out.mae_short.cpu().numpy())
         for k in keys_true:
             truths_buf[k].append(batch[k].numpy())
+        if return_embeddings and out.fusion_embedding is not None:
+            emb_buf.append(out.fusion_embedding.cpu().numpy())
     preds = {k: np.concatenate(v) for k, v in preds_buf.items()}
     truths = {k: np.concatenate(v) for k, v in truths_buf.items()}
+    if return_embeddings and emb_buf:
+        preds["fusion_embedding"] = np.concatenate(emb_buf, axis=0).astype(np.float32)
     return preds, truths
 
 

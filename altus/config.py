@@ -147,12 +147,21 @@ class Layer2Config:
     Input contract: feature vector built from Layer 1's 6 outputs + derived
     aggregates + structural features at the same bar. See altus/models/layer2.py.
     Output: P(profitable_trade) — calibrated, optionally conformal-wrapped.
+
+    Optional: if `embedding_dim > 0`, expects an additional Layer 1 fusion
+    embedding (default 192-D) which gets projected down to `embedding_project_dim`
+    via a small linear layer before being concatenated with the hand-crafted
+    features. Keeps the param count reasonable while preserving most of the
+    embedding's information.
     """
-    input_dim: int = 0          # filled at build time from training data
+    input_dim: int = 0          # filled at build time from hand-crafted feature count
     hidden_dim: int = 64
     n_hidden_layers: int = 2
     dropout: float = 0.30
     use_attention_pool: bool = False  # over context features; simple MLP for v1
+    # Embedding-as-input optional path
+    embedding_dim: int = 0              # 0 = don't use embedding; 192 = use L1 fusion
+    embedding_project_dim: int = 16     # project down to this dim before concat
 
 
 @dataclass

@@ -205,6 +205,11 @@ class Layer2MetaLabeler(nn.Module):
     Architecturally simple by design — meta-labeling sample sizes are small
     (only candidate signals, not all bars) so we keep the model tight to
     avoid overfitting. Validated empirically per our standing rule.
+
+    Optional Layer 1 fusion embedding path: if cfg.embedding_dim > 0, the
+    forward signature changes to accept (hand_crafted_features, embedding).
+    The embedding is projected down to cfg.embedding_project_dim via a small
+    Linear, then concatenated with the hand-crafted features before the MLP.
     """
 
     def __init__(self, cfg: Layer2Config) -> None:
@@ -213,8 +218,19 @@ class Layer2MetaLabeler(nn.Module):
             raise ValueError("Layer2Config.input_dim must be set before constructing the model")
         self.cfg = cfg
 
+        # Optional embedding projector
+        self.embedding_proj: nn.Module | None = None
+        effective_input_dim = cfg.input_dim
+        if cfg.embedding_dim > 0:
+            self.embedding_proj = nn.Sequential(
+                nn.Linear(cfg.embedding_dim, cfg.embedding_project_dim),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+            )
+            effective_input_dim += cfg.embedding_project_dim
+
         layers: list[nn.Module] = []
-        in_dim = cfg.input_dim
+        in_dim = effective_input_dim
         for _ in range(cfg.n_hidden_layers):
             layers += [
                 nn.Linear(in_dim, cfg.hidden_dim),
@@ -232,14 +248,23 @@ class Layer2MetaLabeler(nn.Module):
         ]
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, input_dim) -> (B,) logits (sigmoid for probability)."""
+    def forward(self, x: torch.Tensor, embedding: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        x: (B, input_dim) hand-crafted features
+        embedding: (B, embedding_dim) Layer 1 fusion embedding, required iff cfg.embedding_dim > 0
+        Returns logits (B,); apply sigmoid for probabilities.
+        """
+        if self.embedding_proj is not None:
+            if embedding is None:
+                raise ValueError("Layer2 was configured with embedding_dim>0 but no embedding was passed")
+            emb_proj = self.embedding_proj(embedding)
+            x = torch.cat([x, emb_proj], dim=-1)
         return self.net(x).squeeze(-1)
 
     @torch.no_grad()
-    def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
+    def predict_proba(self, x: torch.Tensor, embedding: torch.Tensor | None = None) -> torch.Tensor:
         """Convenience: returns sigmoid(forward) as probabilities."""
-        return torch.sigmoid(self.forward(x))
+        return torch.sigmoid(self.forward(x, embedding=embedding))
 
 
 def build_layer2(input_dim: int, **overrides) -> Layer2MetaLabeler:

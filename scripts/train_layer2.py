@@ -36,12 +36,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def _load_layer1_val_preds(run_dir: Path, variant: str = "tcn") -> dict:
-    """Load + concat all per-fold val predictions from a cloud run directory."""
+    """Load + concat all per-fold val predictions from a cloud run directory.
+
+    Auto-includes Layer 1 fusion embeddings if present (saved by
+    extract_layer1_val_preds.py --save-embeddings).
+    """
     npz_files = sorted(run_dir.glob(f"{variant}_fold*_val_preds.npz"))
     if not npz_files:
         raise FileNotFoundError(
             f"No val-pred files matching '{variant}_fold*_val_preds.npz' in {run_dir}.\n"
-            "Re-run scripts/train_cloud.py with the latest code (it now saves these)."
+            "Re-run scripts/train_cloud.py or scripts/extract_layer1_val_preds.py."
         )
     out: dict[str, list[np.ndarray]] = {}
     positions: list[np.ndarray] = []
@@ -51,7 +55,11 @@ def _load_layer1_val_preds(run_dir: Path, variant: str = "tcn") -> dict:
         for k in data.files:
             if k in ("val_positions", "fold"):
                 continue
-            out.setdefault(k, []).append(data[k])
+            arr = data[k]
+            # Embeddings are saved as float16 to save disk space; up-cast on load
+            if k == "val_preds_fusion_embedding":
+                arr = arr.astype(np.float32)
+            out.setdefault(k, []).append(arr)
     merged = {k: np.concatenate(v) for k, v in out.items()}
     merged["val_positions"] = np.concatenate(positions)
     return merged
@@ -110,6 +118,14 @@ def main():
         "mfe_short": l1["val_preds_mfe_short"][sort_order],
         "mae_short": l1["val_preds_mae_short"][sort_order],
     }
+    # Optional: L1 fusion embedding (192-D per sample) — present if extract was
+    # run with --save-embeddings
+    l1_embeddings = None
+    if "val_preds_fusion_embedding" in l1:
+        l1_embeddings = l1["val_preds_fusion_embedding"][sort_order]
+        print(f"  Loaded L1 fusion embeddings: shape {l1_embeddings.shape} (Layer 2 will use them)")
+    else:
+        print(f"  (No L1 fusion embeddings in npz; running Layer 2 on hand-crafted features only)")
 
     # Subset labels to those val positions only
     from altus.labels.triple_barrier import LabelOutput
@@ -148,10 +164,21 @@ def main():
     cands_val_indices = np.arange(split_idx, n_total)
     print(f"\nTrain {len(X_train):,} → Val {len(X_val):,} (chronological)")
 
+    # Also split embeddings if present. Embeddings are indexed by the same
+    # candidate ordering, so the same split indices apply.
+    emb_train = emb_val = None
+    if l1_embeddings is not None:
+        # First subset to candidate indices (Layer 2 uses only top-K signals)
+        emb_for_candidates = l1_embeddings[cands.indices]
+        emb_train = emb_for_candidates[:split_idx]
+        emb_val = emb_for_candidates[split_idx:]
+        print(f"  Embeddings: train {emb_train.shape}, val {emb_val.shape}")
+
     # ---- Train Layer 2 ----------------------------------------------------
     print("\nTraining Layer 2 meta-labeler...")
     t0 = time.time()
-    result = train_layer2(X_train, y_train, X_val, y_val, cfg=cfg, device=args.device, verbose=True)
+    result = train_layer2(X_train, y_train, X_val, y_val, cfg=cfg, device=args.device,
+                          verbose=True, emb_train=emb_train, emb_val=emb_val)
     print(f"  Trained in {time.time() - t0:.1f}s")
     print(f"  val_auc raw: {result.val_meta_metrics['val_auc_raw']:.4f}")
     print(f"  val_auc cal: {result.val_meta_metrics['val_auc_cal']:.4f}")
@@ -171,15 +198,37 @@ def main():
         bar_index=cands.bar_index[cands_val_indices],
     )
 
+    # L2 output distribution diagnostic
+    p = result.val_probs_calibrated
     print("\n" + "=" * 72)
-    print(" CASCADE EVALUATION: Layer 1 alone vs Layer 1 + Layer 2 filter")
+    print(" L2 calibrated probability distribution (val slice)")
     print("=" * 72)
-    for thresh in (0.50, 0.55, 0.60, 0.65, 0.70):
+    print(f"  min={p.min():.3f}  p25={np.percentile(p,25):.3f}  median={np.median(p):.3f}  "
+          f"p75={np.percentile(p,75):.3f}  max={p.max():.3f}  mean={p.mean():.3f}")
+    print(f"  fraction >=0.50: {(p>=0.50).mean():.3f}    >=0.55: {(p>=0.55).mean():.3f}    "
+          f">=0.60: {(p>=0.60).mean():.3f}")
+
+    print("\n" + "=" * 72)
+    print(" CASCADE EVAL — PERCENTILE MODE (rank by L2 score, take top K%)")
+    print(" This is the right measure when base rate < 0.5 (always the case for triple-barrier)")
+    print("=" * 72)
+    for k in (0.01, 0.05, 0.10, 0.20, 0.50):
+        cascade = evaluate_cascade(
+            val_cands, result.val_probs_calibrated,
+            mode="percentile", top_k_fraction=k,
+        )
+        print(f"  top {int(k*100):>2}%: {cascade.summary_line()}")
+
+    print("\n" + "=" * 72)
+    print(" CASCADE EVAL — THRESHOLD MODE (absolute calibrated probability)")
+    print(" (likely retains 0 trades if base rate is low — diagnostic only)")
+    print("=" * 72)
+    for thresh in (0.45, 0.48, 0.50, 0.55, 0.60):
         cascade = evaluate_cascade(val_cands, result.val_probs_calibrated, l2_threshold=thresh)
         print(f"  threshold={thresh:.2f}: {cascade.summary_line()}")
 
     print("\nConformal-gated cascade (lower-bound of 90% interval >= threshold):")
-    for thresh in (0.50, 0.55, 0.60):
+    for thresh in (0.45, 0.50, 0.55):
         cascade = evaluate_cascade(
             val_cands, result.val_probs_calibrated,
             l2_threshold=thresh, use_conformal=True, conformal_gate=result.conformal,

@@ -139,11 +139,16 @@ def train_layer2(
     cfg: Layer2TrainConfig | None = None,
     device: str = "cpu",
     verbose: bool = True,
+    emb_train: np.ndarray | None = None,
+    emb_val: np.ndarray | None = None,
+    embedding_project_dim: int = 16,
 ) -> Layer2TrainResult:
     """Train a Layer 2 meta-labeler on (X_train, y_train), validate on (X_val, y_val).
 
     X_*: DataFrames with columns LAYER2_INPUT_FEATURES (in that order).
     y_*: 1-D int8 arrays of 0/1 meta-labels (was the L1 trade actually profitable).
+    emb_*: optional (N, embedding_dim) arrays of Layer 1 fusion embeddings.
+           If provided, the model gets an additional projected-embedding input.
 
     Returns the trained model + isotonic calibration + conformal gate, all
     ready for downstream cascade evaluation.
@@ -155,6 +160,8 @@ def train_layer2(
 
     feature_names = tuple(X_train.columns)
     input_dim = X_train.shape[1]
+    use_embedding = emb_train is not None and emb_val is not None
+    embedding_dim = emb_train.shape[1] if use_embedding else 0
 
     # ---- Split a calibration tail off the training set --------------------
     n_train = len(X_train)
@@ -163,6 +170,9 @@ def train_layer2(
     y_fit = y_train[: n_train - n_cal]
     X_cal = X_train.iloc[n_train - n_cal :]
     y_cal = y_train[n_train - n_cal :]
+    if use_embedding:
+        emb_fit = emb_train[: n_train - n_cal].astype(np.float32)
+        emb_cal_arr = emb_train[n_train - n_cal :].astype(np.float32)
 
     # ---- Standardize inputs (per-feature z-score from fit set) ------------
     feat_mean = X_fit.mean().to_numpy(dtype=np.float32)
@@ -179,23 +189,35 @@ def train_layer2(
     yc_t = torch.from_numpy(y_cal.astype(np.float32)).to(dev)
     Xv_t = _to_tensor(X_val)
 
+    # Embeddings (don't z-score — they're already learned representations)
+    Ef_t = torch.from_numpy(emb_fit).to(dev) if use_embedding else None
+    Ec_t = torch.from_numpy(emb_cal_arr).to(dev) if use_embedding else None
+    Ev_t = torch.from_numpy(emb_val.astype(np.float32)).to(dev) if use_embedding else None
+
     # ---- Build model + optimizer ------------------------------------------
     model = build_layer2(input_dim=input_dim,
                          hidden_dim=Layer2Config().hidden_dim,
                          n_hidden_layers=Layer2Config().n_hidden_layers,
-                         dropout=Layer2Config().dropout).to(dev)
+                         dropout=Layer2Config().dropout,
+                         embedding_dim=embedding_dim,
+                         embedding_project_dim=embedding_project_dim).to(dev)
     n_params = sum(p.numel() for p in model.parameters())
     if verbose:
+        emb_note = f" + emb[{embedding_dim}d→{embedding_project_dim}d]" if use_embedding else ""
         log.info(f"Layer 2: {n_params:,} params, train={len(X_fit):,}, "
-                 f"cal={len(X_cal):,}, val={len(X_val):,}, input_dim={input_dim}")
+                 f"cal={len(X_cal):,}, val={len(X_val):,}, input_dim={input_dim}{emb_note}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.n_epochs)
     bce = nn.BCEWithLogitsLoss()
 
     # ---- Training loop ----------------------------------------------------
-    loader = DataLoader(TensorDataset(Xf_t, yf_t), batch_size=cfg.batch_size,
-                        shuffle=True, drop_last=False)
+    # When embedding is used, dataset bundles X + embedding so they're indexed together
+    if use_embedding:
+        dataset = TensorDataset(Xf_t, Ef_t, yf_t)
+    else:
+        dataset = TensorDataset(Xf_t, yf_t)
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
     best_val_auc = -float("inf")
     best_state = None
     patience = cfg.early_stop_patience
@@ -204,10 +226,15 @@ def train_layer2(
     for epoch in range(cfg.n_epochs):
         model.train()
         epoch_loss = 0.0
-        for xb, yb in loader:
+        for batch in loader:
+            if use_embedding:
+                xb, eb, yb = batch
+            else:
+                xb, yb = batch
+                eb = None
             yb_smooth = yb * (1 - 2 * cfg.label_smoothing) + cfg.label_smoothing
             opt.zero_grad()
-            logits = model(xb)
+            logits = model(xb, embedding=eb) if use_embedding else model(xb)
             loss = bce(logits, yb_smooth)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -219,7 +246,8 @@ def train_layer2(
         # Validation
         model.eval()
         with torch.no_grad():
-            val_probs = torch.sigmoid(model(Xv_t)).cpu().numpy()
+            val_logits = model(Xv_t, embedding=Ev_t) if use_embedding else model(Xv_t)
+            val_probs = torch.sigmoid(val_logits).cpu().numpy()
         # Compute val AUC (simple)
         try:
             from sklearn.metrics import roc_auc_score
@@ -251,8 +279,10 @@ def train_layer2(
     # ---- Final raw predictions on cal + val -------------------------------
     model.eval()
     with torch.no_grad():
-        cal_probs_raw = torch.sigmoid(model(Xc_t)).cpu().numpy()
-        val_probs_raw = torch.sigmoid(model(Xv_t)).cpu().numpy()
+        cal_logits = model(Xc_t, embedding=Ec_t) if use_embedding else model(Xc_t)
+        val_logits = model(Xv_t, embedding=Ev_t) if use_embedding else model(Xv_t)
+        cal_probs_raw = torch.sigmoid(cal_logits).cpu().numpy()
+        val_probs_raw = torch.sigmoid(val_logits).cpu().numpy()
 
     # ---- Isotonic calibration fit on the cal slice ------------------------
     iso = IsotonicRegression(y_min=1e-4, y_max=1 - 1e-4, out_of_bounds="clip")
@@ -317,13 +347,23 @@ def evaluate_cascade(
     l2_threshold: float = 0.55,
     use_conformal: bool = False,
     conformal_gate: ConformalGate | None = None,
+    mode: str = "threshold",
+    top_k_fraction: float = 0.20,
 ) -> CascadeResult:
     """Measure how Layer 2 filtering changes the trading outcome.
 
-    Compares:
-      - Layer 1 alone: trade every candidate
-      - Layer 1 + Layer 2: trade only when L2's calibrated P >= threshold
-        (or when conformal lower-bound >= threshold if use_conformal=True)
+    mode='threshold' (default):
+      Keep candidates whose L2 calibrated probability ≥ `l2_threshold`.
+      Use case: deployment with calibrated probabilities that are >0.5 for
+      positives. Breaks down when base rate is <0.5 because calibration
+      collapses everything below threshold.
+
+    mode='percentile':
+      Keep TOP `top_k_fraction` of candidates by L2 score, regardless of
+      absolute probability. Robust to base-rate < 0.5 cases. This is
+      essentially "rank trades by L2 confidence, take the top X%."
+
+    `use_conformal` only applies in threshold mode.
     """
     from altus.config import SL_POINTS
 
@@ -331,7 +371,13 @@ def evaluate_cascade(
     if n_candidates == 0:
         return CascadeResult(0, 0, 0.0, float("nan"), float("nan"), 0.0, 0.0, 0.0, 0.0)
 
-    if use_conformal:
+    if mode == "percentile":
+        n_keep = max(1, int(np.ceil(top_k_fraction * n_candidates)))
+        # Top n_keep by L2 score
+        top_idx = np.argpartition(-l2_probs_calibrated, n_keep)[:n_keep]
+        keep_mask = np.zeros(n_candidates, dtype=bool)
+        keep_mask[top_idx] = True
+    elif use_conformal:
         if conformal_gate is None:
             raise ValueError("use_conformal=True but conformal_gate is None")
         keep_mask = conformal_gate.trade_mask(l2_probs_calibrated, threshold=l2_threshold)
