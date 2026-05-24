@@ -159,8 +159,13 @@ def main():
 
     # ----- Data range + split config --------------------------------------
     if args.full:
-        run_start, run_end = "2021-01-01", "2026-03-31"  # full history
-        n_folds, oos_months = 5, 6
+        # 3 years instead of 5 — empirically the 5yr sweep ran ~43min/family
+        # which is too long for iterative development. 3yr × 3 folds gives us
+        # ~15-20min/family while still providing solid statistical power.
+        # When we want the full 5yr beast for final pre-deployment validation,
+        # we use --beast (not yet implemented; raise then) or pass explicit dates.
+        run_start, run_end = "2023-04-01", "2026-03-31"  # 3 years
+        n_folds, oos_months = 3, 4
         run_tag = "full"
     else:
         run_start, run_end = "2024-04-01", "2025-04-01"  # 1 year
