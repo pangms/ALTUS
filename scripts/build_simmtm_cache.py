@@ -43,7 +43,13 @@ def main():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--output", default="artifacts/simmtm_embeddings.parquet")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--disable-cudnn", action="store_true", default=True,
+                        help="Disable cuDNN — same RunPod workaround as pretrain_simmtm.py")
     args = parser.parse_args()
+
+    if args.disable_cudnn:
+        torch.backends.cudnn.enabled = False
+        print("cuDNN: DISABLED (workaround for RunPod version mismatch)")
 
     from altus.data import load_mnq
     from altus.models.simmtm import SimMTMEncoder

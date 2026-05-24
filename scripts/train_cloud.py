@@ -140,6 +140,14 @@ def main():
                              "distribution shift. Adds ~100 params, no measurable speed cost.")
     args = parser.parse_args()
 
+    # Disable cuDNN — workaround for RunPod images where the system cuDNN
+    # version doesn't match torch 2.4.1's bundled version (triggers
+    # CUDNN_STATUS_NOT_INITIALIZED). Plain CUDA kernels work fine. Set
+    # ALTUS_ENABLE_CUDNN=1 to override (e.g., on a fixed-environment pod).
+    import os
+    if os.environ.get("ALTUS_ENABLE_CUDNN", "0") != "1":
+        torch.backends.cudnn.enabled = False
+
     t0 = time.time()
     run_id = time.strftime("%Y%m%d_%H%M%S")
 
@@ -149,6 +157,7 @@ def main():
         device = torch.device("cuda")
         print(f"CUDA: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        print(f"cuDNN: {'enabled' if torch.backends.cudnn.enabled else 'DISABLED (workaround)'}")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
         print("WARNING: running on MPS. Full configs will be slow (~hours).")

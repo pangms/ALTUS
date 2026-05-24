@@ -88,7 +88,19 @@ def main():
     parser.add_argument("--output", default="artifacts/simmtm_encoder.pt")
     parser.add_argument("--device", default="cuda",
                         help="cuda/mps/cpu — CUDA strongly recommended for full runs")
+    parser.add_argument("--disable-cudnn", action="store_true", default=True,
+                        help="Disable cuDNN. Workaround for RunPod images where the system "
+                             "cuDNN is newer than torch 2.4.1's bundled version and triggers "
+                             "CUDNN_STATUS_NOT_INITIALIZED. Plain CUDA kernels are used "
+                             "instead — slightly slower but functional. Defaults to True "
+                             "because we keep hitting this; pass --no-disable-cudnn to test "
+                             "without it on a different environment.")
     args = parser.parse_args()
+
+    # Workaround: disable cuDNN to avoid version-mismatch errors on RunPod
+    if args.disable_cudnn:
+        torch.backends.cudnn.enabled = False
+        print("cuDNN: DISABLED (workaround for RunPod version mismatch)")
 
     from altus.data import load_mnq
     from altus.models.simmtm import SimMTMPretrainModel, masked_reconstruction_loss
