@@ -15,6 +15,7 @@ import pandas as pd
 
 from altus.features.families import (
     anomaly,
+    cross_asset,
     exhaustion,
     kronos,
     session_time,
@@ -29,6 +30,9 @@ _FAMILY_REGISTRY = {
     "vol":       volatility,
     "exhaust":   exhaustion,
     "anomaly":   anomaly,
+    # Cross-asset: NQ + ES + ZB features. Uses already-downloaded cross-asset
+    # parquets. Outside cross-asset data range, features default to neutral.
+    "cross":     cross_asset,
     # Kronos: cache-only at training time. Requires running
     # scripts/build_kronos_cache.py once before enabling.
     "kronos":    kronos,
