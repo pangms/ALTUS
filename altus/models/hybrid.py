@@ -24,6 +24,7 @@ import torch.nn as nn
 from altus.config import ModelConfig
 from altus.models.mamba import MambaEncoder
 from altus.models.modern_tcn import ModernTCNEncoder
+from altus.models.revin import RevIN
 from altus.models.xlstm import XLSTMEncoder
 
 
@@ -83,6 +84,14 @@ class HybridLayer1(nn.Module):
         self.cfg = cfg
         self.long_context_kind = long_context
 
+        # Optional RevIN input normalization. Applied to the raw window before
+        # any encoder. Cheap, addresses train/live distribution shift directly.
+        self.revin = (
+            RevIN(num_features=cfg.n_features_in, affine=cfg.revin_affine)
+            if cfg.use_revin
+            else None
+        )
+
         # Peer branch 1: ModernTCN (local patterns) — always present
         self.tcn = ModernTCNEncoder(
             in_features=cfg.n_features_in,
@@ -139,6 +148,8 @@ class HybridLayer1(nn.Module):
         self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads)
 
     def forward(self, x: torch.Tensor) -> HybridOutputs:
+        if self.revin is not None:
+            x = self.revin(x, mode="norm")
         h_tcn = self.tcn(x)
         z_tcn = self.tcn_pool(h_tcn)
 

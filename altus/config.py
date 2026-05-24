@@ -109,6 +109,12 @@ class ModelConfig:
     n_class_heads: int = 2
     n_reg_heads: int = 4
 
+    # RevIN — Reversible Instance Normalization wrapping the input window.
+    # Per-instance z-score + learnable affine. Addresses train/live distribution
+    # shift (price/vol regimes change over the years). See altus/models/revin.py.
+    use_revin: bool = False
+    revin_affine: bool = True
+
 
 # ---------------------------------------------------------------------------
 # Training defaults

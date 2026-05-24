@@ -16,6 +16,7 @@ import pandas as pd
 from altus.features.families import (
     anomaly,
     exhaustion,
+    kronos,
     session_time,
     trend_hurst,
     volatility,
@@ -28,6 +29,9 @@ _FAMILY_REGISTRY = {
     "vol":       volatility,
     "exhaust":   exhaustion,
     "anomaly":   anomaly,
+    # Kronos: cache-only at training time. Requires running
+    # scripts/build_kronos_cache.py once before enabling.
+    "kronos":    kronos,
 }
 
 

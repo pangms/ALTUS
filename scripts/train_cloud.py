@@ -126,12 +126,18 @@ def main():
                              "  xlstm = TCN + xLSTM (slow without optimized kernels)\n"
                              "Default is 'tcn' for fast iteration; use 'mamba,xlstm' once kernels are wired up.")
     parser.add_argument("--families", default="none",
-                        help="Phase A structural feature families to enable on top of price features.\n"
-                             "  none                                   = baseline (no structural; matches Stage 1)\n"
-                             "  all                                    = all 5 families enabled\n"
-                             "  session | trend | vol | exhaust | anomaly  = single-family A/B test\n"
-                             "  session,vol  (etc)                     = arbitrary combinations\n"
+                        help="Structural feature families to enable on top of price features.\n"
+                             "  none                                       = baseline (no structural)\n"
+                             "  all                                        = all 6 families enabled\n"
+                             "  session | trend | vol | exhaust | anomaly  = Phase A foundation families\n"
+                             "  kronos                                     = Kronos foundation model features\n"
+                             "                                              (requires running build_kronos_cache.py first)\n"
+                             "  session,vol  (etc)                         = arbitrary combinations\n"
                              "Used to A/B test each family's contribution per our empirical commitment.")
+    parser.add_argument("--use-revin", action="store_true",
+                        help="Wrap encoder input in Reversible Instance Normalization (RevIN).\n"
+                             "Per-instance z-score with learnable affine. Addresses train/live\n"
+                             "distribution shift. Adds ~100 params, no measurable speed cost.")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -230,6 +236,7 @@ def main():
                 tcn_n_blocks=FULL_CFG["tcn_n_blocks"],
                 mamba_n_blocks=FULL_CFG["mamba_n_blocks"],
                 xlstm_n_blocks=FULL_CFG["xlstm_n_blocks"],
+                use_revin=args.use_revin,
             )
             n_params = sum(p.numel() for p in model.parameters())
             print(f"  model params: {n_params:,}")
@@ -295,6 +302,7 @@ def main():
                 tcn_n_blocks=FULL_CFG["tcn_n_blocks"],
                 mamba_n_blocks=FULL_CFG["mamba_n_blocks"],
                 xlstm_n_blocks=FULL_CFG["xlstm_n_blocks"],
+                use_revin=args.use_revin,
             ).to(device)
             model.load_state_dict(torch.load(last_ckpt, map_location=device))
             cal_preds, cal_truths = _predict(model, cal_loader, device)
