@@ -17,6 +17,7 @@ from altus.features.families import (
     anomaly,
     cross_asset,
     exhaustion,
+    key_levels,
     kronos,
     session_time,
     trend_hurst,
@@ -33,6 +34,8 @@ _FAMILY_REGISTRY = {
     # Cross-asset: NQ + ES + ZB features. Uses already-downloaded cross-asset
     # parquets. Outside cross-asset data range, features default to neutral.
     "cross":     cross_asset,
+    # Phase B: market structure. Each sub-family A/B-testable independently.
+    "levels":    key_levels,   # KDE on swing points + distance/proximity features
     # Kronos: cache-only at training time. Requires running
     # scripts/build_kronos_cache.py once before enabling.
     "kronos":    kronos,
