@@ -37,15 +37,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from altus.data.loader import load_mnq
 from altus.features.families import (
+    absorption,
     anomaly,
+    corr_regime,
     cross_asset,
     exhaustion,
+    expectation_surprise,
+    extension,
     flow,
+    flow_acceleration,
     key_levels,
+    liquidity_asymmetry,
     liquidity_zones,
+    mtf_alignment,
+    pv_divergence,
+    round_levels,
+    session_anatomy,
     session_time,
     sweep_detection,
+    tape_rhythm,
     trend_hurst,
+    vol_regime,
     volatility,
     volume_profile,
 )
@@ -60,19 +72,31 @@ TRUNCATE_AT = 8_000
 OFFSET = 100  # rows N..N+OFFSET-1 are the "future" data that must not leak backward
 
 FAMILIES = {
-    "session_time":     session_time,
-    "trend_hurst":      trend_hurst,
-    "volatility":       volatility,
-    "exhaustion":       exhaustion,
-    "anomaly":          anomaly,
-    "cross_asset":      cross_asset,
-    "key_levels":       key_levels,
-    "liquidity_zones":  liquidity_zones,
-    "sweep_detection":  sweep_detection,
-    "volume_profile":   volume_profile,
-    "flow":             flow,
-    # kronos deliberately omitted: returns zeros without a cache and the cache
-    # itself is a static lookup, not a temporal computation — no causality risk.
+    "session_time":         session_time,
+    "trend_hurst":          trend_hurst,
+    "volatility":           volatility,
+    "exhaustion":           exhaustion,
+    "anomaly":              anomaly,
+    "cross_asset":          cross_asset,
+    "key_levels":           key_levels,
+    "liquidity_zones":      liquidity_zones,
+    "sweep_detection":      sweep_detection,
+    "volume_profile":       volume_profile,
+    "flow":                 flow,
+    # Phase E additions:
+    "round_levels":         round_levels,
+    "mtf_alignment":        mtf_alignment,
+    "absorption":           absorption,
+    "pv_divergence":        pv_divergence,
+    "extension":            extension,
+    "vol_regime":           vol_regime,
+    "session_anatomy":      session_anatomy,
+    "corr_regime":          corr_regime,
+    "liquidity_asymmetry":  liquidity_asymmetry,
+    "tape_rhythm":          tape_rhythm,
+    "flow_acceleration":    flow_acceleration,
+    "expectation_surprise": expectation_surprise,
+    # kronos deliberately omitted: cache lookup, no causality risk.
 }
 
 
@@ -146,7 +170,10 @@ def test_structural_orchestrator(df: pd.DataFrame) -> bool:
     # Use the registry's own keys (session, trend, vol, etc. — NOT the python
     # module names). Exclude kronos: it's a static cache lookup, not a temporal
     # computation, so no causality risk; unavailable in test env.
-    spec = StructuralSpec.from_string("session,trend,vol,exhaust,anomaly,cross,levels,liquidity,sweep,profile,flow")
+    spec = StructuralSpec.from_string(
+        "session,trend,vol,exhaust,anomaly,cross,levels,liquidity,sweep,profile,flow,"
+        "round,mtf,absorp,pvd,extension,vreg,sanat,creg,lasym,rhythm,facc,surprise"
+    )
     spec.causal_shift = False
     try:
         truncated_out = build_structural_features(df.iloc[:TRUNCATE_AT], spec=spec)

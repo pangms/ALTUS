@@ -14,16 +14,28 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from altus.features.families import (
+    absorption,
     anomaly,
+    corr_regime,
     cross_asset,
     exhaustion,
+    expectation_surprise,
+    extension,
     flow,
+    flow_acceleration,
     key_levels,
     kronos,
+    liquidity_asymmetry,
     liquidity_zones,
+    mtf_alignment,
+    pv_divergence,
+    round_levels,
+    session_anatomy,
     session_time,
     sweep_detection,
+    tape_rhythm,
     trend_hurst,
+    vol_regime,
     volatility,
     volume_profile,
 )
@@ -35,16 +47,29 @@ _FAMILY_REGISTRY = {
     "vol":       volatility,
     "exhaust":   exhaustion,
     "anomaly":   anomaly,
-    # Cross-asset: NQ + ES + ZB features. Uses already-downloaded cross-asset
-    # parquets. Outside cross-asset data range, features default to neutral.
+    # Cross-asset: NQ + ES + ZB features.
     "cross":     cross_asset,
-    # Phase B: market structure. Each sub-family A/B-testable independently.
+    # Phase B: market structure.
     "levels":    key_levels,         # KDE on swing points + distance/proximity features
     "liquidity": liquidity_zones,    # Untouched HTF swing extremes (stop magnets)
     "sweep":     sweep_detection,    # Sweep + failed-breakout events (trap detection)
     "profile":   volume_profile,     # Kernel-smoothed volume profile (POC, VA, LVN)
-    # Phase C: order flow + cross-asset causal/lead-lag (simplified PCMCI+)
+    # Phase C: order flow + cross-asset causal/lead-lag.
     "flow":      flow,               # VPIN institutional flow + cross-asset lead-lag corrs
+    # Phase E: trader-frame features — each addresses a specific philosophical
+    # question from the 34-question framework.
+    "round":     round_levels,         # Q11 — round-number proximity (4 feats)
+    "mtf":       mtf_alignment,        # Q8  — multi-timeframe trend alignment (5 feats)
+    "absorp":    absorption,           # Q5  — vol-normalized move size (3 feats)
+    "pvd":       pv_divergence,        # Q4  — price-volume sign correlation (3 feats)
+    "extension": extension,            # Q13 — distance from last swing (3 feats)
+    "vreg":      vol_regime,           # Q23 — volatility regime expansion/contraction (4 feats)
+    "sanat":     session_anatomy,      # Q24 — where in the session's natural arc (5 feats)
+    "creg":      corr_regime,          # Q25 — cross-asset correlation regime (4 feats)
+    "lasym":     liquidity_asymmetry,  # Q28 — above-vs-below liquidity asymmetry (3 feats)
+    "rhythm":    tape_rhythm,          # Q29 — tape steady vs spasmodic (3 feats)
+    "facc":      flow_acceleration,    # Q32 — second derivative of flow imbalance (3 feats)
+    "surprise":  expectation_surprise, # Q33 — actual vs conditional-expected (4 feats)
     # Kronos: cache-only at training time. Requires running
     # scripts/build_kronos_cache.py once before enabling.
     "kronos":    kronos,
