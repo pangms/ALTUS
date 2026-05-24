@@ -42,6 +42,11 @@ class LabelOutput(NamedTuple):
     time_to_long_tp: np.ndarray   # int16, bar index of TP hit or H if no hit
     time_to_short_tp: np.ndarray
     entry_price: np.ndarray       # float32, the open we'd have entered at
+    # Phase H: inflection auxiliary target (Q26 — inflection vs continuation).
+    # = 1 if the trade resolved AGAINST the recent direction (reversal),
+    # else 0. Used as an auxiliary head on L1 — regularizes the shared encoder
+    # and gives Layer 2 a "is this a turning point?" signal.
+    inflection_label: np.ndarray  # int8, {0, 1}
 
 
 def triple_barrier_labels(
@@ -114,6 +119,24 @@ def triple_barrier_labels(
         high_win=high_win, low_win=low_win, entry=entry, stop_idx=short_stop, side="short"
     )
 
+    # ----- Inflection auxiliary label (Phase H, Q26) ---------------------------
+    # Recent direction = sign of open[T] - open[T-K] over K=10 bars.
+    # Inflection = 1 if recent direction was UP but only short_tp triggered (or
+    # vice versa) — i.e., the market resolved AGAINST the recent direction.
+    # Continuation (label 0) when direction matches resolution OR timeout.
+    INFLECTION_LOOKBACK = 10
+    INFLECTION_MIN_MOVE_PTS = 2.0  # require non-trivial recent direction to label inflection
+    recent_change = np.zeros(n_labels, dtype=np.float32)
+    if n_labels > INFLECTION_LOOKBACK:
+        recent_change[INFLECTION_LOOKBACK:] = (
+            opens[INFLECTION_LOOKBACK:n_labels] - opens[:n_labels - INFLECTION_LOOKBACK]
+        )
+    recent_up = recent_change > INFLECTION_MIN_MOVE_PTS
+    recent_down = recent_change < -INFLECTION_MIN_MOVE_PTS
+    short_won = short_label == 1
+    long_won = long_label == 1
+    inflection_label = ((recent_up & short_won) | (recent_down & long_won)).astype(np.int8)
+
     # ----- Session-break filter ------------------------------------------------
     # A label is valid iff the H-bar window starting at T spans exactly
     # H-1 minutes of wall-clock time. Otherwise the window crosses a Globex
@@ -134,6 +157,7 @@ def triple_barrier_labels(
         time_to_long_tp=long_tp_first[keep].astype(np.int16),
         time_to_short_tp=short_tp_first[keep].astype(np.int16),
         entry_price=entry[keep].astype(np.float32),
+        inflection_label=inflection_label[keep],
     )
 
 
@@ -156,6 +180,7 @@ def filter_labels_to_index(labels: LabelOutput, target_index: pd.DatetimeIndex) 
         time_to_long_tp=labels.time_to_long_tp[idx],
         time_to_short_tp=labels.time_to_short_tp[idx],
         entry_price=labels.entry_price[idx],
+        inflection_label=labels.inflection_label[idx],
     )
 
 

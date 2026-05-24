@@ -24,7 +24,8 @@ def _select_device(preferred: str) -> torch.device:
 
 
 def _multi_task_loss(
-    out, batch, cls_w: float, reg_w: float, reg_scale: float = 30.0, label_smoothing: float = 0.0
+    out, batch, cls_w: float, reg_w: float, reg_scale: float = 30.0, label_smoothing: float = 0.0,
+    inflection_w: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """BCE on the classification heads, Huber on the regression heads.
 
@@ -36,6 +37,9 @@ def _multi_task_loss(
 
     Label smoothing softens hard 0/1 targets to (eps, 1-eps), reducing the
     model's ability to memorize and improving calibration.
+
+    Phase H: if inflection_w > 0 AND out.inflection_logit is not None, also
+    add BCE loss for the inflection auxiliary head.
     """
     bce = nn.BCEWithLogitsLoss()
     huber = nn.HuberLoss(delta=1.0)
@@ -64,6 +68,15 @@ def _multi_task_loss(
         "huber_mfeS": float(l_mfeS.detach()),
         "huber_maeS": float(l_maeS.detach()),
     }
+
+    # Phase H: auxiliary inflection loss
+    if inflection_w > 0 and out.inflection_logit is not None and "inflection" in batch:
+        infl_tgt = batch["inflection"] * (1 - 2 * label_smoothing) + label_smoothing
+        l_infl = bce(out.inflection_logit, infl_tgt)
+        total = total + inflection_w * l_infl
+        parts["bce_inflection"] = float(l_infl.detach())
+        parts["loss"] = float(total.detach())
+
     return total, parts
 
 
@@ -83,8 +96,11 @@ def _predict(
     model.eval()
     keys_pred = ["long_tp_prob", "short_tp_prob", "mfe_long", "mae_long", "mfe_short", "mae_short"]
     keys_true = ["long_tp", "short_tp", "mfe_long", "mae_long", "mfe_short", "mae_short"]
-    preds_buf = {k: [] for k in keys_pred}
-    truths_buf = {k: [] for k in keys_true}
+    preds_buf: dict[str, list[np.ndarray]] = {k: [] for k in keys_pred}
+    truths_buf: dict[str, list[np.ndarray]] = {k: [] for k in keys_true}
+    # Phase H: inflection predictions + truths (only collected if model emits them)
+    infl_pred_buf: list[np.ndarray] = []
+    infl_truth_buf: list[np.ndarray] = []
     emb_buf: list[np.ndarray] = []
     for batch in loader:
         x = batch["x"].to(device)
@@ -97,10 +113,18 @@ def _predict(
         preds_buf["mae_short"].append(out.mae_short.cpu().numpy())
         for k in keys_true:
             truths_buf[k].append(batch[k].numpy())
+        if out.inflection_logit is not None:
+            infl_pred_buf.append(out.inflection_prob.cpu().numpy())
+            if "inflection" in batch:
+                infl_truth_buf.append(batch["inflection"].numpy())
         if return_embeddings and out.fusion_embedding is not None:
             emb_buf.append(out.fusion_embedding.cpu().numpy())
     preds = {k: np.concatenate(v) for k, v in preds_buf.items()}
     truths = {k: np.concatenate(v) for k, v in truths_buf.items()}
+    if infl_pred_buf:
+        preds["inflection_prob"] = np.concatenate(infl_pred_buf)
+    if infl_truth_buf:
+        truths["inflection"] = np.concatenate(infl_truth_buf)
     if return_embeddings and emb_buf:
         preds["fusion_embedding"] = np.concatenate(emb_buf, axis=0).astype(np.float32)
     return preds, truths
@@ -179,6 +203,7 @@ def train_model(
             loss, parts = _multi_task_loss(
                 out, batch, cfg.cls_loss_weight, cfg.reg_loss_weight,
                 label_smoothing=cfg.label_smoothing,
+                inflection_w=getattr(cfg, "inflection_loss_weight", 0.0),
             )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)

@@ -77,6 +77,8 @@ class ALTUSDataset(Dataset):
             "mae_long": torch.tensor(self._labels.mae_long[pos], dtype=torch.float32),
             "mfe_short": torch.tensor(self._labels.mfe_short[pos], dtype=torch.float32),
             "mae_short": torch.tensor(self._labels.mae_short[pos], dtype=torch.float32),
+            # Phase H: inflection auxiliary target (Q26)
+            "inflection": torch.tensor(self._labels.inflection_label[pos], dtype=torch.float32),
         }
 
 
@@ -89,4 +91,5 @@ def collate(batch: list[dict]) -> dict[str, torch.Tensor]:
         "mae_long": torch.stack([b["mae_long"] for b in batch], dim=0),
         "mfe_short": torch.stack([b["mfe_short"] for b in batch], dim=0),
         "mae_short": torch.stack([b["mae_short"] for b in batch], dim=0),
+        "inflection": torch.stack([b["inflection"] for b in batch], dim=0),
     }

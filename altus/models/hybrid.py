@@ -36,6 +36,9 @@ class HybridOutputs:
     mae_long: torch.Tensor
     mfe_short: torch.Tensor
     mae_short: torch.Tensor
+    # Phase H: P(inflection) — probability that price resolves AGAINST recent
+    # direction. Optional — only populated when ModelConfig.use_inflection=True.
+    inflection_logit: torch.Tensor | None = None
     # Fusion embedding: the (B, fusion_hidden) vector right before the output
     # heads. Captures the model's compressed representation of the input
     # window. Optional — only populated if `return_embedding=True` is passed
@@ -50,6 +53,12 @@ class HybridOutputs:
     def short_tp_prob(self) -> torch.Tensor:
         return torch.sigmoid(self.short_tp_logit)
 
+    @property
+    def inflection_prob(self) -> torch.Tensor | None:
+        if self.inflection_logit is None:
+            return None
+        return torch.sigmoid(self.inflection_logit)
+
     def as_dict(self) -> dict[str, torch.Tensor]:
         d = {
             "long_tp_logit": self.long_tp_logit,
@@ -59,6 +68,8 @@ class HybridOutputs:
             "mfe_short": self.mfe_short,
             "mae_short": self.mae_short,
         }
+        if self.inflection_logit is not None:
+            d["inflection_logit"] = self.inflection_logit
         if self.fusion_embedding is not None:
             d["fusion_embedding"] = self.fusion_embedding
         return d
@@ -154,6 +165,17 @@ class HybridLayer1(nn.Module):
         # Output heads
         self.head_cls = nn.Linear(cfg.fusion_hidden, cfg.n_class_heads)
         self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads)
+        # Phase H: auxiliary inflection head — small 2-layer MLP over fusion
+        # embedding. Predicts P(price resolves AGAINST recent direction).
+        if cfg.use_inflection:
+            self.head_inflection = nn.Sequential(
+                nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden // 2),
+                nn.GELU(),
+                nn.Dropout(cfg.fusion_dropout),
+                nn.Linear(cfg.fusion_hidden // 2, 1),
+            )
+        else:
+            self.head_inflection = None
 
     def forward(self, x: torch.Tensor, return_embedding: bool = False) -> HybridOutputs:
         if self.revin is not None:
@@ -172,6 +194,7 @@ class HybridLayer1(nn.Module):
         z = self.fusion(z)
         cls = self.head_cls(z)
         reg = torch.nn.functional.softplus(self.head_reg(z))
+        inflection_logit = self.head_inflection(z).squeeze(-1) if self.head_inflection is not None else None
 
         return HybridOutputs(
             long_tp_logit=cls[:, 0],
@@ -180,6 +203,7 @@ class HybridLayer1(nn.Module):
             mae_long=reg[:, 1],
             mfe_short=reg[:, 2],
             mae_short=reg[:, 3],
+            inflection_logit=inflection_logit,
             fusion_embedding=z if return_embedding else None,
         )
 

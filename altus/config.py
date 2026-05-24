@@ -130,6 +130,12 @@ class ModelConfig:
     n_class_heads: int = 2
     n_reg_heads: int = 4
 
+    # Phase H: auxiliary inflection head (Q26 — inflection vs continuation).
+    # Predicts P(price resolves AGAINST recent direction) — a "wave about to break"
+    # detector. Trained alongside main heads as a regularizer; output is also a
+    # feature L2 can consume. Disable via use_inflection=False to A/B test impact.
+    use_inflection: bool = True
+
     # RevIN — Reversible Instance Normalization wrapping the input window.
     # Per-instance z-score + learnable affine. Addresses train/live distribution
     # shift (price/vol regimes change over the years). See altus/models/revin.py.
@@ -200,6 +206,9 @@ class TrainConfig:
     # but the regression heads serve as auxiliary regularization for the shared encoder.
     cls_loss_weight: float = 1.0
     reg_loss_weight: float = 0.2
+    # Phase H: auxiliary inflection head loss weight. Small by default — it's
+    # an auxiliary regularizer, not the primary objective.
+    inflection_loss_weight: float = 0.15
     early_stop_patience: int = 4
     val_metric: str = "mean_auc"     # what early stopping watches
     num_workers: int = 0              # MPS works best single-process
