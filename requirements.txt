@@ -1,5 +1,9 @@
-numpy>=2.0
-pandas>=2.2
+# NumPy pinned <2.0 because torch 2.4.x (which the RunPod images ship with)
+# was built before NumPy 2 was officially supported. Mixing torch 2.4 + numpy 2
+# triggers cuDNN initialization errors on CUDA. Bump this constraint if/when
+# we upgrade torch.
+numpy>=1.26,<2.0
+pandas>=2.2,<3.0
 polars>=1.0
 pyarrow>=15
 scikit-learn>=1.5
