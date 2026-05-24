@@ -48,18 +48,31 @@ EPS = 1e-9
 def _bvc_vpin(
     log_returns: np.ndarray,
     volumes: np.ndarray,
-    bucket_vol: float,
+    bucket_vol: float | np.ndarray,
     n_buckets_window: int = 50,
 ) -> np.ndarray:
     """Compute VPIN time series via bulk volume classification.
+
+    `bucket_vol` may be a scalar (fixed bucket size) or a per-bar array (causal
+    time-varying bucket size — bucket closed at bar T uses bucket_vol[T]).
 
     Returns an array of length len(volumes) with per-bar VPIN value (computed
     over the last `n_buckets_window` complete volume buckets ending at that bar;
     NaN where we haven't accumulated enough).
     """
     n = len(volumes)
-    if n == 0 or bucket_vol <= 0:
+    if n == 0:
         return np.full(n, np.nan, dtype=np.float32)
+
+    # Normalize bucket_vol to a per-bar array; bar T uses bucket_vol_arr[T]
+    if np.isscalar(bucket_vol):
+        if bucket_vol <= 0:
+            return np.full(n, np.nan, dtype=np.float32)
+        bucket_vol_arr = np.full(n, float(bucket_vol), dtype=np.float64)
+    else:
+        bucket_vol_arr = np.asarray(bucket_vol, dtype=np.float64)
+        if len(bucket_vol_arr) != n:
+            raise ValueError(f"bucket_vol array length {len(bucket_vol_arr)} != n {n}")
 
     # Recent return volatility for BVC scaling (rolling, causal)
     ret_std = pd.Series(log_returns).rolling(60, min_periods=10).std().to_numpy()
@@ -70,7 +83,6 @@ def _bvc_vpin(
     cur_vol = 0.0
     bucket_imbalances: list[float] = []  # |buy - sell| / total per closed bucket
     vpin_out = np.full(n, np.nan, dtype=np.float32)
-    bucket_end_bars: list[int] = []  # bar index at which each bucket closed
 
     for t in range(n):
         v = volumes[t]
@@ -86,18 +98,21 @@ def _bvc_vpin(
         cur_sell += bar_sell
         cur_vol += v
 
-        while cur_vol >= bucket_vol:
-            # Close a bucket; allocate exactly bucket_vol from current accumulator
-            scale = bucket_vol / cur_vol
+        bv_t = bucket_vol_arr[t]
+        if bv_t <= 0:
+            continue
+
+        while cur_vol >= bv_t:
+            # Close a bucket; allocate exactly bv_t from current accumulator
+            scale = bv_t / cur_vol
             bucket_buy = cur_buy * scale
             bucket_sell = cur_sell * scale
-            imbalance = abs(bucket_buy - bucket_sell) / max(bucket_vol, EPS)
+            imbalance = abs(bucket_buy - bucket_sell) / max(bv_t, EPS)
             bucket_imbalances.append(float(imbalance))
-            bucket_end_bars.append(t)
             # Leave the remainder in the accumulator for the next bucket
             cur_buy -= bucket_buy
             cur_sell -= bucket_sell
-            cur_vol -= bucket_vol
+            cur_vol -= bv_t
 
         if len(bucket_imbalances) >= n_buckets_window:
             vpin_out[t] = float(np.mean(bucket_imbalances[-n_buckets_window:]))
@@ -126,13 +141,23 @@ def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
     vol_arr = volume.to_numpy(dtype=np.float64)
 
     # ---- VPIN at 3 horizons ----------------------------------------------
-    # Bucket size proportional to median 1m volume × horizon_minutes
-    median_vol = float(pd.Series(vol_arr[vol_arr > 0]).median()) if (vol_arr > 0).any() else 1.0
+    # Bucket size proportional to causal expanding median × horizon_minutes.
+    # WHY expanding+shifted: a naive median over the full input array creates a
+    # lookahead leak — bar T's bucket_vol depends on bars > T. Expanding median
+    # shifted by 1 ensures bar T's bucket size only uses bars 0..T-1.
+    vol_pos = pd.Series(np.where(vol_arr > 0, vol_arr, np.nan))
+    causal_median = (
+        vol_pos.expanding(min_periods=200).median()
+        .shift(1)
+        .ffill()
+        .fillna(1.0)
+        .to_numpy(dtype=np.float64)
+    )
     out = {}
     for label, horizon_min in (("5m", 5), ("30m", 30), ("4h", 240)):
-        bucket_vol = median_vol * horizon_min
+        bucket_vol_arr = causal_median * horizon_min
         n_buckets = 50  # smoothing window in bucket count
-        vpin = _bvc_vpin(log_ret, vol_arr, bucket_vol=bucket_vol, n_buckets_window=n_buckets)
+        vpin = _bvc_vpin(log_ret, vol_arr, bucket_vol=bucket_vol_arr, n_buckets_window=n_buckets)
         out[f"flow_vpin_{label}"] = pd.Series(vpin, index=df_1m.index).fillna(0).astype(np.float32)
 
     # ---- Lead-lag correlations with NQ/ES/ZB ------------------------------
