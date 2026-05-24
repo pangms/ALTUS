@@ -1,10 +1,14 @@
-"""Pure-PyTorch selective state-space model (Mamba-1 style) for MPS.
+"""Selective state-space model (Mamba-1 style) with optional CUDA kernel.
 
-The official Mamba-1/Mamba-2 implementations require CUDA and a Triton kernel
-for the parallel selective-scan. Apple Silicon has neither. This file implements
-the same core mechanic with a sequential scan loop — correct, MPS-compatible,
-~10-50x slower than CUDA. For ALTUS Layer 1 with seq_len=240 / d_model=96 this
-is fast enough for dev and modest training runs.
+Two execution paths:
+  - **Fast path (CUDA)**: If `mamba-ssm` package is installed AND tensor is on
+    CUDA, uses the official Triton-fused parallel selective-scan kernel.
+    ~10-50x faster than the Python loop. Install with:
+        pip install mamba-ssm causal-conv1d --no-build-isolation
+  - **Fallback (MPS/CPU)**: Pure-PyTorch sequential scan loop. Correct but
+    slow on long sequences — fine for dev / small training runs.
+
+The forward signature is identical; the path is chosen automatically per call.
 
 Reference: Gu & Dao 2023, "Mamba: Linear-Time Sequence Modeling with Selective
 State Spaces." Inspired by the johnma2006/mamba-minimal reference repo.
@@ -22,6 +26,14 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Try to import the official CUDA kernel. Falls back to Python loop if absent.
+_HAS_MAMBA_SSM = False
+try:
+    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn as _official_selective_scan
+    _HAS_MAMBA_SSM = True
+except ImportError:
+    _official_selective_scan = None
 
 
 class SelectiveSSM(nn.Module):
@@ -56,18 +68,37 @@ class SelectiveSSM(nn.Module):
         self.D = nn.Parameter(torch.ones(d_inner))  # skip connection
 
     def forward(self, u: torch.Tensor) -> torch.Tensor:
-        """u: (B, L, d_inner) -> y: (B, L, d_inner). Sequential scan."""
+        """u: (B, L, d_inner) -> y: (B, L, d_inner).
+
+        Uses official CUDA kernel (mamba-ssm) when available + tensor on CUDA;
+        else falls back to a pure-PyTorch sequential scan (~10-50x slower on
+        long sequences but correct on MPS/CPU).
+        """
         B_, L, D_inner = u.shape
         N = self.d_state
 
-        # Compute Δ, B, C from input.
+        # Compute Δ, B, C from input (shared between both paths).
         x_dbl = self.x_proj(u)  # (B, L, dt_rank + 2*N)
-        delta, B_in, C_in = torch.split(x_dbl, [self.dt_rank, N, N], dim=-1)
-        delta = F.softplus(self.dt_proj(delta))  # (B, L, D_inner)
-
-        # Discretize A and B with Δ (zero-order hold approximation).
-        # A is shared across batch; expand for elementwise math.
+        delta_pre, B_in, C_in = torch.split(x_dbl, [self.dt_rank, N, N], dim=-1)
+        delta = F.softplus(self.dt_proj(delta_pre))  # (B, L, D_inner)
         A = -torch.exp(self.A_log)  # (D_inner, N)
+
+        # ---- Fast path: official Triton/CUDA kernel ---------------------------
+        if _HAS_MAMBA_SSM and u.is_cuda:
+            # mamba-ssm expects channels-first: (B, D, L) and (B, N, L)
+            u_T = u.transpose(1, 2).contiguous()           # (B, D_inner, L)
+            delta_T = delta.transpose(1, 2).contiguous()   # (B, D_inner, L)
+            B_T = B_in.transpose(1, 2).contiguous()        # (B, N, L)
+            C_T = C_in.transpose(1, 2).contiguous()        # (B, N, L)
+            # delta_softplus=False because we already applied softplus above.
+            # Pass D so skip connection happens inside the kernel.
+            y_T = _official_selective_scan(
+                u_T, delta_T, A, B_T, C_T, self.D,
+                z=None, delta_bias=None, delta_softplus=False,
+            )
+            return y_T.transpose(1, 2)  # back to (B, L, D_inner)
+
+        # ---- Fallback: pure-PyTorch sequential scan --------------------------
         # deltaA: (B, L, D_inner, N)
         deltaA = torch.exp(delta.unsqueeze(-1) * A)
         # deltaB_u: (B, L, D_inner, N)  -- B_in broadcast to (B, L, 1, N) * delta*u
@@ -78,12 +109,11 @@ class SelectiveSSM(nn.Module):
         ys = []
         for t in range(L):
             h = deltaA[:, t] * h + deltaB_u[:, t]   # (B, D_inner, N)
-            # y_t = C_t · h_t  ->  (B, D_inner)
             y_t = (h * C_in[:, t].unsqueeze(1)).sum(dim=-1)
             ys.append(y_t)
         y = torch.stack(ys, dim=1)  # (B, L, D_inner)
 
-        # Skip connection
+        # Skip connection (kernel handles this internally on fast path)
         y = y + u * self.D
         return y
 
