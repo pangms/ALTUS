@@ -17,12 +17,15 @@ from altus.features.families import (
     anomaly,
     cross_asset,
     exhaustion,
+    flow,
     key_levels,
     kronos,
     liquidity_zones,
     session_time,
+    sweep_detection,
     trend_hurst,
     volatility,
+    volume_profile,
 )
 
 
@@ -36,8 +39,12 @@ _FAMILY_REGISTRY = {
     # parquets. Outside cross-asset data range, features default to neutral.
     "cross":     cross_asset,
     # Phase B: market structure. Each sub-family A/B-testable independently.
-    "levels":    key_levels,    # KDE on swing points + distance/proximity features
-    "liquidity": liquidity_zones,  # Untouched HTF swing extremes (stop magnets)
+    "levels":    key_levels,         # KDE on swing points + distance/proximity features
+    "liquidity": liquidity_zones,    # Untouched HTF swing extremes (stop magnets)
+    "sweep":     sweep_detection,    # Sweep + failed-breakout events (trap detection)
+    "profile":   volume_profile,     # Kernel-smoothed volume profile (POC, VA, LVN)
+    # Phase C: order flow + cross-asset causal/lead-lag (simplified PCMCI+)
+    "flow":      flow,               # VPIN institutional flow + cross-asset lead-lag corrs
     # Kronos: cache-only at training time. Requires running
     # scripts/build_kronos_cache.py once before enabling.
     "kronos":    kronos,
