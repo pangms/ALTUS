@@ -91,17 +91,56 @@ FEATURE_COLUMNS = (
 # ---------------------------------------------------------------------------
 
 def _import_kronos():
-    """Lazy import — Kronos isn't a hard dependency of altus."""
+    """Lazy import — Kronos isn't a hard dependency of altus.
+
+    Kronos ships as a script-style codebase (not a pip-installable package).
+    Per the official README, the workflow is:
+       git clone https://github.com/shiyu-coder/Kronos.git
+       cd Kronos && pip install -r requirements.txt
+    Then `from model import Kronos, KronosTokenizer, KronosPredictor` works
+    only when CWD is the Kronos directory OR Kronos is on sys.path.
+
+    This function tries several discovery strategies and falls back to a
+    clear error message with install instructions.
+    """
+    import sys
+    from pathlib import Path
+
+    # Strategy 1: maybe it's pip-installed as a package called 'kronos'
     try:
-        from kronos import Kronos, KronosPredictor, KronosTokenizer
+        from kronos import Kronos, KronosPredictor, KronosTokenizer  # type: ignore
         return Kronos, KronosTokenizer, KronosPredictor
-    except ImportError as e:
-        raise ImportError(
-            "Kronos not installed. To use the kronos feature family:\n"
-            "    pip install git+https://github.com/shiyu-coder/Kronos.git\n"
-            "    pip install transformers huggingface_hub\n"
-            f"Underlying error: {e}"
-        ) from e
+    except ImportError:
+        pass
+
+    # Strategy 2: search common locations for a cloned Kronos repo, then add to sys.path
+    repo_root = Path(__file__).resolve().parents[3]
+    candidate_dirs = [
+        repo_root.parent / "Kronos",          # sibling of ALTUS repo (./Kronos)
+        Path("/workspace/Kronos"),             # RunPod-style workspace
+        Path.home() / "Kronos",                # user home
+        repo_root / "Kronos",                  # nested inside ALTUS (less common)
+    ]
+    for d in candidate_dirs:
+        model_file = d / "model.py"
+        model_pkg = d / "model" / "__init__.py"
+        if model_file.exists() or model_pkg.exists():
+            sys.path.insert(0, str(d))
+            try:
+                from model import Kronos, KronosPredictor, KronosTokenizer  # type: ignore
+                return Kronos, KronosTokenizer, KronosPredictor
+            except ImportError:
+                sys.path.pop(0)
+                continue
+
+    raise ImportError(
+        "Kronos not found in any expected location. To install it:\n"
+        "    cd /workspace          # or wherever you keep external repos\n"
+        "    git clone https://github.com/shiyu-coder/Kronos.git\n"
+        "    cd Kronos && pip install -r requirements.txt\n"
+        "Then re-run the Kronos-feature build/training script. The kronos module\n"
+        "will auto-detect the clone at /workspace/Kronos or as a sibling of ALTUS."
+    )
 
 
 # ---------------------------------------------------------------------------
