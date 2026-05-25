@@ -51,9 +51,20 @@ SLIPPAGE_RT_POINTS = 0.5   # round-trip slippage budget, index points (~2 ticks)
 # ---------------------------------------------------------------------------
 # Label parameters — triple-barrier
 # ---------------------------------------------------------------------------
-TP_POINTS = 30.0   # take profit, index points
+TP_POINTS = 30.0   # take profit, index points (used in "fixed" mode)
 SL_POINTS = 30.0   # stop loss, index points  (1:1 RR by design)
 LABEL_HORIZON_BARS = 60  # H — max bars to a barrier before timeout (1 hour on 1m)
+
+# Barrier scaling mode. Two options:
+#   "fixed"      → constant TP_POINTS / SL_POINTS for every bar (legacy)
+#   "vol_scaled" → TP = SL = LABEL_VOL_SCALE_K × ATR_LABEL_VOL_SCALE_ATR_BARS[T-1]
+#                  per-bar barriers; base rate jumps from ~0.27 to ~0.50 because
+#                  barrier difficulty is normalized for local volatility. Lets
+#                  the model focus on DIRECTION rather than wasting capacity on
+#                  regime detection. Default post-audit 2026-05-25.
+LABEL_SCALE_MODE = "vol_scaled"
+LABEL_VOL_SCALE_K = 1.5            # multiplier on ATR for the per-bar barrier
+LABEL_VOL_SCALE_ATR_BARS = 60      # ATR window in 1m bars (1 hour)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +91,12 @@ N_WALK_FORWARD_FOLDS = 5         # walk-forward folds inside the dev set
 # ---------------------------------------------------------------------------
 # Feature pipeline
 # ---------------------------------------------------------------------------
-TIMEFRAMES_MIN = (1, 3, 5, 15, 30, 60)  # multi-timeframe stack (expanded 2026-05-24 — adds 30m/60m HTF context)
+TIMEFRAMES_MIN = (3, 5, 15, 30, 60)  # multi-timeframe stack
+# Note: 1m dropped 2026-05-25 per audit Agent C — the tf1 block had 14× weaker
+# MI than tf30 (mean MI 0.04 vs 0.58); it was paying full cognitive-load cost
+# for essentially noise. With rolling-3m primary handling the smallest TF, the
+# explicit "1m" stack was redundant anyway. Keep 3,5,15,30,60 for genuine
+# multi-TF context.
 SEQ_LEN_BARS = 240               # context window length the model sees (1m bars)
                                  # 240 = 4 hours of 1m context, captures session memory
 ROLL_NORM_WINDOW = 1440          # 1 day of 1m bars for rolling z-score normalization
@@ -108,52 +124,57 @@ LAYER1_V2_STRUCTURAL_FAMILIES = "vol,trend,anomaly,bocpd"
 # ---------------------------------------------------------------------------
 # Layer 1 Model defaults
 # ---------------------------------------------------------------------------
+# POST-AUDIT (2026-05-25): the previous defaults overfitted at epoch 1
+# (~0.5 samples/param, capacity ~10× too high). New defaults shrink the model
+# and turn on regularization. See [[project-architectural-pivot]].
 @dataclass
 class ModelConfig:
-    # Shared
-    d_model: int = 96
+    # Shared — shrunk from d_model=96 to 48 (Agent B recommendation).
+    d_model: int = 48
     n_features_in: int = 0           # filled at build time from feature pipeline
     seq_len: int = SEQ_LEN_BARS
 
-    # ModernTCN branch
+    # ModernTCN branch — n_blocks 3 → 2 (already covers full window via patches).
     tcn_patch_size: int = 8
-    tcn_n_blocks: int = 3
+    tcn_n_blocks: int = 2
     tcn_kernel_size: int = 7
     tcn_dw_expansion: int = 2
     tcn_pw_expansion: int = 4
 
-    # Mamba branch
-    mamba_n_blocks: int = 3
+    # Mamba branch (deferred — kept for future A/B once CUDA kernel installed)
+    mamba_n_blocks: int = 2
     mamba_d_state: int = 16
     mamba_d_conv: int = 4
     mamba_expand: int = 2
 
     # xLSTM branch (alternative)
-    xlstm_n_blocks: int = 3
+    xlstm_n_blocks: int = 2
     xlstm_n_heads: int = 4
 
-    # Fusion
-    fusion_hidden: int = 192
-    fusion_dropout: float = 0.30   # was 0.15 — increased to fight overfitting
-    tcn_dropout: float = 0.30      # was hardcoded 0.10 in modern_tcn.py
+    # Fusion — hidden 192 → 96 to match d_model shrink.
+    fusion_hidden: int = 96
+    fusion_dropout: float = 0.40   # was 0.30 — stronger regularization post-audit
+    tcn_dropout: float = 0.40
     mamba_dropout: float = 0.10
     xlstm_dropout: float = 0.10
 
-    # Output heads — 6 learned outputs:
-    #   2 binary (long_tp, short_tp), 4 regression (mfe_long, mae_long, mfe_short, mae_short)
-    n_class_heads: int = 2
-    n_reg_heads: int = 4
+    # Output heads:
+    #   3 classification (long_wins, short_wins, neither) — single softmax-3 (post-audit fix).
+    #   0 regression by default (post-audit) — kept ONLY if explicitly set > 0.
+    #     Regression heads ate ~28% of gradient on a task that's pure classification.
+    n_class_heads: int = 3
+    n_reg_heads: int = 0
 
-    # Phase H: auxiliary inflection head (Q26 — inflection vs continuation).
-    # Predicts P(price resolves AGAINST recent direction) — a "wave about to break"
-    # detector. Trained alongside main heads as a regularizer; output is also a
-    # feature L2 can consume. Disable via use_inflection=False to A/B test impact.
-    use_inflection: bool = True
+    # Phase H: auxiliary inflection head — DISABLED by default post-audit.
+    # The dedicated inflection model (planned Phase F) will replace this aux head;
+    # the shared-encoder aux version couldn't disagree with the main head and was
+    # crowding gradient. Re-enable via use_inflection=True for A/B.
+    use_inflection: bool = False
 
-    # RevIN — Reversible Instance Normalization wrapping the input window.
-    # Per-instance z-score + learnable affine. Addresses train/live distribution
-    # shift (price/vol regimes change over the years). See altus/models/revin.py.
-    use_revin: bool = False
+    # RevIN — ENABLED by default post-audit (was False, big OOS-shift cost).
+    # Per-instance z-score + learnable affine. The val→OOS AUC gap of ~0.14
+    # observed in the pre-audit sweep suggested RevIN should have been on.
+    use_revin: bool = True
     revin_affine: bool = True
 
 
@@ -207,22 +228,27 @@ class Layer2TrainConfig:
 # ---------------------------------------------------------------------------
 # Training defaults (Layer 1)
 # ---------------------------------------------------------------------------
+# POST-AUDIT (2026-05-25): lower LR + warmup, more regularization, kill
+# auxiliary losses. Was: lr=1e-3 produced best_epoch=1 every fold (model
+# memorized epoch 1 then overfit). New schedule should converge over multiple
+# epochs with stable val AUC.
 @dataclass
 class TrainConfig:
     batch_size: int = 256
     n_epochs: int = 20
-    lr: float = 1e-3
-    weight_decay: float = 1e-4     # was 1e-5 — stronger L2 to fight overfitting
+    lr: float = 2e-4               # was 1e-3 — slower, more stable convergence
+    warmup_epochs: int = 1         # linear warmup before cosine schedule
+    weight_decay: float = 3e-4     # was 1e-4 — stronger L2
     grad_clip: float = 1.0
-    label_smoothing: float = 0.05  # softens BCE targets (1 -> 0.95, 0 -> 0.05) — reduces memorization
-    input_feature_dropout: float = 0.05  # randomly zero this fraction of features per batch in training
-    # Multi-task loss weights: classification dominates because that's what we trade on,
-    # but the regression heads serve as auxiliary regularization for the shared encoder.
+    label_smoothing: float = 0.10  # softens CE targets — was 0.05
+    input_feature_dropout: float = 0.10  # was 0.05 — kill more feature noise
+    # Multi-task loss weights:
+    #   cls = 3-class direction cross-entropy (the ONLY thing we trade on)
+    #   reg = MFE/MAE Huber — disabled by default (was 0.2)
+    #   inflection = aux BCE head — disabled by default (was 0.15)
     cls_loss_weight: float = 1.0
-    reg_loss_weight: float = 0.2
-    # Phase H: auxiliary inflection head loss weight. Small by default — it's
-    # an auxiliary regularizer, not the primary objective.
-    inflection_loss_weight: float = 0.15
+    reg_loss_weight: float = 0.0
+    inflection_loss_weight: float = 0.0
     early_stop_patience: int = 4
     val_metric: str = "mean_auc"     # what early stopping watches
     num_workers: int = 0              # MPS works best single-process

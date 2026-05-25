@@ -27,7 +27,43 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from altus.config import LABEL_HORIZON_BARS, SL_POINTS, TP_POINTS
+from altus.config import (
+    LABEL_HORIZON_BARS,
+    LABEL_SCALE_MODE,
+    LABEL_VOL_SCALE_ATR_BARS,
+    LABEL_VOL_SCALE_K,
+    SL_POINTS,
+    TP_POINTS,
+)
+
+
+def _causal_atr_per_bar(df_1m: pd.DataFrame, n_bars: int) -> np.ndarray:
+    """Per-bar ATR computed strictly from PAST bars (causal — shifted by 1).
+
+    True Range = max(H-L, |H-prev_close|, |L-prev_close|). ATR is the rolling
+    mean of TR over `n_bars`. The .shift(1) at the end ensures ATR at row T
+    uses only bars strictly before T — so a label at T using `k * ATR[T]` for
+    barriers is leak-free.
+
+    Returns float32 array of length len(df_1m). Warmup rows (< n_bars history)
+    are forward-filled from the first valid ATR, then nan-filled with the
+    median to avoid 0/NaN propagation into barrier calculations.
+    """
+    h = df_1m["high"].astype(np.float32)
+    l = df_1m["low"].astype(np.float32)
+    c = df_1m["close"].astype(np.float32)
+    prev_c = c.shift(1)
+    tr = pd.concat([
+        (h - l).abs(),
+        (h - prev_c).abs(),
+        (l - prev_c).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(n_bars, min_periods=max(2, n_bars // 4)).mean().shift(1)
+    # Fall back to median for warmup rows so we don't end up with zero barriers.
+    atr_med = float(atr.median())
+    if not np.isfinite(atr_med) or atr_med <= 0:
+        atr_med = 1.0
+    return atr.fillna(atr_med).clip(lower=0.5).to_numpy(dtype=np.float32)
 
 
 class LabelOutput(NamedTuple):
@@ -47,58 +83,83 @@ class LabelOutput(NamedTuple):
     # else 0. Used as an auxiliary head on L1 — regularizes the shared encoder
     # and gives Layer 2 a "is this a turning point?" signal.
     inflection_label: np.ndarray  # int8, {0, 1}
+    # Per-bar barrier sizes (post-audit 2026-05-25). Under vol-scaled mode
+    # these vary by bar (TP = SL = k × ATR_local); under fixed mode they're
+    # the constant TP_POINTS / SL_POINTS broadcast. Downstream sims read these
+    # for honest PnL when barriers vary.
+    tp_points: np.ndarray         # float32, points
+    sl_points: np.ndarray         # float32, points
 
 
 def triple_barrier_labels(
     df_1m: pd.DataFrame,
-    tp_points: float = TP_POINTS,
-    sl_points: float = SL_POINTS,
+    tp_points: float | None = None,
+    sl_points: float | None = None,
     horizon: int = LABEL_HORIZON_BARS,
+    scale_mode: str | None = None,
 ) -> LabelOutput:
-    """Vectorized triple-barrier labeler.
+    """Vectorized triple-barrier labeler with optional vol-scaled barriers.
 
     Parameters
     ----------
     df_1m : DataFrame with at least 'open', 'high', 'low', UTC-indexed at 1m.
-    tp_points, sl_points : barrier sizes in index points.
+    tp_points, sl_points : barrier sizes in index points. Only honored when
+        scale_mode='fixed'. When None, falls back to config.TP_POINTS/SL_POINTS.
     horizon : H, max bars to a barrier.
+    scale_mode : 'fixed' or 'vol_scaled'. Defaults to config.LABEL_SCALE_MODE
+        (post-audit default 'vol_scaled' — TP=SL=k×ATR per bar). Vol-scaled
+        lifts base rate from ~0.27 (with fixed 30pt) to ~0.50 by removing
+        the "is this regime volatile enough" component from the label.
 
     Returns
     -------
     LabelOutput where all arrays are aligned to `index` (a subset of df_1m.index
     with the last `horizon` rows removed and session-break-spanning rows filtered).
     """
-    # We need at least horizon+1 bars to label a single entry.
     if len(df_1m) <= horizon:
         raise ValueError(f"need > {horizon} bars to label; got {len(df_1m)}")
+
+    mode = scale_mode if scale_mode is not None else LABEL_SCALE_MODE
+    if mode not in ("fixed", "vol_scaled"):
+        raise ValueError(f"unknown scale_mode: {mode!r}")
 
     opens = df_1m["open"].to_numpy(dtype=np.float32)
     highs = df_1m["high"].to_numpy(dtype=np.float32)
     lows = df_1m["low"].to_numpy(dtype=np.float32)
     n = len(opens)
-
-    # Number of labelable rows: we lose the last `horizon` because their forward
-    # window doesn't fit in the data.
     n_labels = n - horizon
-    entry = opens[:n_labels]  # shape (n_labels,)
+    entry = opens[:n_labels]
+
+    # Per-bar barrier sizes — same shape as `entry`. Causal: ATR computed
+    # strictly from past bars so labels don't leak future vol.
+    if mode == "vol_scaled":
+        atr = _causal_atr_per_bar(df_1m, LABEL_VOL_SCALE_ATR_BARS)[:n_labels]
+        tp_pts_arr = (LABEL_VOL_SCALE_K * atr).astype(np.float32)
+        sl_pts_arr = tp_pts_arr.copy()  # 1:1 RR by construction
+    else:
+        tp_v = TP_POINTS if tp_points is None else float(tp_points)
+        sl_v = SL_POINTS if sl_points is None else float(sl_points)
+        tp_pts_arr = np.full(n_labels, tp_v, dtype=np.float32)
+        sl_pts_arr = np.full(n_labels, sl_v, dtype=np.float32)
 
     # Sliding windows of high and low covering bars [T, T+H-1].
-    # sliding_window_view returns a view — no big memory copy here.
     from numpy.lib.stride_tricks import sliding_window_view
-    high_win = sliding_window_view(highs, window_shape=horizon)  # (n-H+1, H)
-    low_win = sliding_window_view(lows, window_shape=horizon)
-    # Trim to n_labels rows (sliding_window_view gives n-H+1, we want n-H).
-    high_win = high_win[:n_labels]
-    low_win = low_win[:n_labels]
+    high_win = sliding_window_view(highs, window_shape=horizon)[:n_labels]
+    low_win = sliding_window_view(lows, window_shape=horizon)[:n_labels]
+
+    # Per-bar barriers via (n_labels,)-broadcast — works for both modes.
+    long_tp_thr = (entry + tp_pts_arr)[:, None]
+    long_sl_thr = (entry - sl_pts_arr)[:, None]
+    short_tp_thr = (entry - sl_pts_arr)[:, None]
+    short_sl_thr = (entry + sl_pts_arr)[:, None]
 
     # ----- Long-side barriers --------------------------------------------------
-    long_tp_mask = high_win >= entry[:, None] + tp_points   # (n_labels, H) bool
-    long_sl_mask = low_win <= entry[:, None] - sl_points
+    long_tp_mask = high_win >= long_tp_thr
+    long_sl_mask = low_win <= long_sl_thr
 
     long_tp_first = _first_true(long_tp_mask, default=horizon)
     long_sl_first = _first_true(long_sl_mask, default=horizon)
 
-    # Conservative within-bar tie-break: SL wins ties.
     long_label = (long_tp_first < long_sl_first).astype(np.int8)
     long_stop = np.minimum(np.minimum(long_tp_first, long_sl_first), horizon - 1)
 
@@ -107,8 +168,8 @@ def triple_barrier_labels(
     )
 
     # ----- Short-side barriers -------------------------------------------------
-    short_tp_mask = low_win <= entry[:, None] - tp_points
-    short_sl_mask = high_win >= entry[:, None] + sl_points
+    short_tp_mask = low_win <= short_tp_thr
+    short_sl_mask = high_win >= short_sl_thr
 
     short_tp_first = _first_true(short_tp_mask, default=horizon)
     short_sl_first = _first_true(short_sl_mask, default=horizon)
@@ -158,6 +219,8 @@ def triple_barrier_labels(
         time_to_short_tp=short_tp_first[keep].astype(np.int16),
         entry_price=entry[keep].astype(np.float32),
         inflection_label=inflection_label[keep],
+        tp_points=tp_pts_arr[keep],
+        sl_points=sl_pts_arr[keep],
     )
 
 
@@ -181,6 +244,8 @@ def filter_labels_to_index(labels: LabelOutput, target_index: pd.DatetimeIndex) 
         time_to_short_tp=labels.time_to_short_tp[idx],
         entry_price=labels.entry_price[idx],
         inflection_label=labels.inflection_label[idx],
+        tp_points=labels.tp_points[idx],
+        sl_points=labels.sl_points[idx],
     )
 
 

@@ -141,6 +141,8 @@ def main():
         time_to_short_tp=labels.time_to_short_tp[val_positions],
         entry_price=labels.entry_price[val_positions],
         inflection_label=labels.inflection_label[val_positions],
+        tp_points=labels.tp_points[val_positions],
+        sl_points=labels.sl_points[val_positions],
     )
 
     # ---- Select Layer 1 candidates ----------------------------------------

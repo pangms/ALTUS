@@ -307,13 +307,19 @@ def simulate_l3(
     short_p = preds["short_tp_prob"][sort_order]
 
     cost_pts = SLIPPAGE_RT_POINTS + (COMMISSION_RT_USD / POINT_VALUE_USD)
+    # Per-bar barriers when present (vol-scaled labels); fallback to constants.
+    if "tp_points" in truths:
+        tp_arr = np.asarray(truths["tp_points"])[sort_order]
+        sl_arr = np.asarray(truths["sl_points"])[sort_order]
+    else:
+        tp_arr, sl_arr = TP_POINTS, SL_POINTS
     long_pnl_pts = _per_side_pnl_pts(
         truths["long_tp"][sort_order], truths["mfe_long"][sort_order],
-        truths["mae_long"][sort_order], TP_POINTS, SL_POINTS, cost_pts,
+        truths["mae_long"][sort_order], tp_arr, sl_arr, cost_pts,
     )
     short_pnl_pts = _per_side_pnl_pts(
         truths["short_tp"][sort_order], truths["mfe_short"][sort_order],
-        truths["mae_short"][sort_order], TP_POINTS, SL_POINTS, cost_pts,
+        truths["mae_short"][sort_order], tp_arr, sl_arr, cost_pts,
     )
 
     long_grade = assign_grades(long_p, cfg.grades)

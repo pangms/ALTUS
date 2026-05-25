@@ -69,15 +69,33 @@ class ALTUSDataset(Dataset):
         feat_start = feat_end - self.seq_len + 1
         # (L, F)  — .copy() makes the slice writable so torch.from_numpy doesn't warn
         window = self._features_np[feat_start : feat_end + 1].copy()
+        # 3-class direction label derived from the mutually-exclusive
+        # long_tp / short_tp barriers:
+        #   0 = long_wins  (long_tp=1)
+        #   1 = short_wins (short_tp=1)
+        #   2 = neither    (timeout / both stops)
+        long_tp = int(self._labels.long_tp[pos])
+        short_tp = int(self._labels.short_tp[pos])
+        if long_tp:
+            direction_class = 0
+        elif short_tp:
+            direction_class = 1
+        else:
+            direction_class = 2
         return {
             "x": torch.from_numpy(window),
-            "long_tp": torch.tensor(self._labels.long_tp[pos], dtype=torch.float32),
-            "short_tp": torch.tensor(self._labels.short_tp[pos], dtype=torch.float32),
+            # Direction class for cross-entropy (post-audit primary target).
+            "direction_class": torch.tensor(direction_class, dtype=torch.long),
+            # Original binary labels — kept for inference truths + evaluation
+            # against the historical baseline.
+            "long_tp": torch.tensor(long_tp, dtype=torch.float32),
+            "short_tp": torch.tensor(short_tp, dtype=torch.float32),
             "mfe_long": torch.tensor(self._labels.mfe_long[pos], dtype=torch.float32),
             "mae_long": torch.tensor(self._labels.mae_long[pos], dtype=torch.float32),
             "mfe_short": torch.tensor(self._labels.mfe_short[pos], dtype=torch.float32),
             "mae_short": torch.tensor(self._labels.mae_short[pos], dtype=torch.float32),
-            # Phase H: inflection auxiliary target (Q26)
+            # Phase H: inflection auxiliary target (Q26) — emitted always;
+            # the loss ignores it when inflection_loss_weight=0 (new default).
             "inflection": torch.tensor(self._labels.inflection_label[pos], dtype=torch.float32),
         }
 
@@ -85,6 +103,7 @@ class ALTUSDataset(Dataset):
 def collate(batch: list[dict]) -> dict[str, torch.Tensor]:
     return {
         "x": torch.stack([b["x"] for b in batch], dim=0),
+        "direction_class": torch.stack([b["direction_class"] for b in batch], dim=0),
         "long_tp": torch.stack([b["long_tp"] for b in batch], dim=0),
         "short_tp": torch.stack([b["short_tp"] for b in batch], dim=0),
         "mfe_long": torch.stack([b["mfe_long"] for b in batch], dim=0),

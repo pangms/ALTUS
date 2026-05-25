@@ -153,6 +153,8 @@ def main():
         inflection_label=labels.inflection_label[val_positions]
             if hasattr(labels, "inflection_label") else
             np.zeros(len(val_positions), dtype=np.int8),
+        tp_points=labels.tp_points[val_positions],
+        sl_points=labels.sl_points[val_positions],
     )
 
     # ---- Build L1-only "truths" dict for simulate_l3 (uses REAL labels) ----
@@ -163,6 +165,8 @@ def main():
         "mae_long": labels_val.mae_long,
         "mfe_short": labels_val.mfe_short,
         "mae_short": labels_val.mae_short,
+        "tp_points": labels_val.tp_points,
+        "sl_points": labels_val.sl_points,
     }
     timestamps = labels_val.index.values  # real UTC timestamps from the label set
 

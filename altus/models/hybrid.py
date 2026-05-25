@@ -1,15 +1,23 @@
 """Hybrid Layer 1 model: ModernTCN + (Mamba | xLSTM) peer branches, fused
 with cross-attention, multi-head output.
 
-Six output heads:
-  - long_tp:  sigmoid, BCE-trained
-  - short_tp: sigmoid, BCE-trained
-  - mfe_long, mae_long, mfe_short, mae_short: linear, Huber-loss regression
+DIRECTION HEAD (2026-05-25, post-architectural-audit):
+The classification head outputs a 3-class softmax over {long_wins, short_wins,
+neither} — replacing the original two independent sigmoid heads. Independent
+BCE heads collapsed into a degenerate "P(any TP hits)" volatility detector
+(median |P_long - P_short| ≈ 0.003, top-20% candidates 99.9% long vs 0.1%
+short). The 3-class softmax forces direction prediction because the classes
+compete in the partition of probability mass.
 
-The MFE/MAE regression heads serve double duty: (1) provide useful magnitude
-information for downstream layers (Layer 2 meta-labeling, execution sizing),
-(2) act as auxiliary tasks that regularize the shared encoder representation,
-typically improving the classification heads' calibration.
+For backward compatibility with downstream code (sim_pnl, production_sim,
+layer2_train), we still expose `long_tp_prob` / `short_tp_prob` — these are
+now the softmax slices for classes 0 and 1. They no longer can both be high
+simultaneously; their semantic meaning is "given the model has an opinion,
+which direction" rather than "is each side individually likely."
+
+Regression heads (mfe/mae) are still present in the network but contribute
+zero loss when reg_loss_weight=0 (the new default). They survive as
+inference outputs for any downstream consumer that wants them.
 
 The 'long_context' branch is configurable: choose 'mamba' (default, matches
 the original spec) or 'xlstm' (A/B variant). Both have the same I/O shape.
@@ -30,14 +38,15 @@ from altus.models.xlstm import XLSTMEncoder
 
 @dataclass
 class HybridOutputs:
-    long_tp_logit: torch.Tensor   # (B,)
-    short_tp_logit: torch.Tensor  # (B,)
+    # 3-class direction logits (B, 3): [long_wins, short_wins, neither].
+    # Softmax of these gives the calibrated direction distribution.
+    direction_logits: torch.Tensor
     mfe_long: torch.Tensor        # (B,)
     mae_long: torch.Tensor
     mfe_short: torch.Tensor
     mae_short: torch.Tensor
-    # Phase H: P(inflection) — probability that price resolves AGAINST recent
-    # direction. Optional — only populated when ModelConfig.use_inflection=True.
+    # Phase H: P(inflection) — auxiliary head. Disabled by default in the
+    # post-audit config (use_inflection=False); kept for A/B-able re-enable.
     inflection_logit: torch.Tensor | None = None
     # Fusion embedding: the (B, fusion_hidden) vector right before the output
     # heads. Captures the model's compressed representation of the input
@@ -46,12 +55,33 @@ class HybridOutputs:
     fusion_embedding: torch.Tensor | None = None
 
     @property
+    def direction_probs(self) -> torch.Tensor:
+        """(B, 3) softmax over [long_wins, short_wins, neither]."""
+        return torch.softmax(self.direction_logits, dim=-1)
+
+    @property
     def long_tp_prob(self) -> torch.Tensor:
-        return torch.sigmoid(self.long_tp_logit)
+        """P(long_wins). Backward-compatible alias for downstream sim code."""
+        return self.direction_probs[:, 0]
 
     @property
     def short_tp_prob(self) -> torch.Tensor:
-        return torch.sigmoid(self.short_tp_logit)
+        """P(short_wins). Backward-compatible alias for downstream sim code."""
+        return self.direction_probs[:, 1]
+
+    @property
+    def neither_prob(self) -> torch.Tensor:
+        """P(neither side hits TP within the horizon)."""
+        return self.direction_probs[:, 2]
+
+    @property
+    def long_tp_logit(self) -> torch.Tensor:
+        """Back-compat: 'logit' here is the raw direction logit for class 0."""
+        return self.direction_logits[:, 0]
+
+    @property
+    def short_tp_logit(self) -> torch.Tensor:
+        return self.direction_logits[:, 1]
 
     @property
     def inflection_prob(self) -> torch.Tensor | None:
@@ -61,6 +91,7 @@ class HybridOutputs:
 
     def as_dict(self) -> dict[str, torch.Tensor]:
         d = {
+            "direction_logits": self.direction_logits,
             "long_tp_logit": self.long_tp_logit,
             "short_tp_logit": self.short_tp_logit,
             "mfe_long": self.mfe_long,
@@ -162,9 +193,16 @@ class HybridLayer1(nn.Module):
             nn.Dropout(cfg.fusion_dropout),
         )
 
-        # Output heads
+        # Output heads. cfg.n_class_heads = 3 under the new direction-softmax
+        # design (long_wins, short_wins, neither). We assert here to fail loud
+        # if someone tries to revert to the old dual-BCE config without
+        # rewriting the loss in altus.training.train.
+        assert cfg.n_class_heads == 3, (
+            f"3-class direction head expected; got n_class_heads={cfg.n_class_heads}. "
+            f"Direction is now a single softmax-3 (long/short/neither) — see hybrid.py docstring."
+        )
         self.head_cls = nn.Linear(cfg.fusion_hidden, cfg.n_class_heads)
-        self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads)
+        self.head_reg = nn.Linear(cfg.fusion_hidden, cfg.n_reg_heads) if cfg.n_reg_heads > 0 else None
         # Phase H: auxiliary inflection head — small 2-layer MLP over fusion
         # embedding. Predicts P(price resolves AGAINST recent direction).
         if cfg.use_inflection:
@@ -192,17 +230,26 @@ class HybridLayer1(nn.Module):
 
         # Fusion MLP → (B, fusion_hidden). This is the embedding we expose to L2.
         z = self.fusion(z)
-        cls = self.head_cls(z)
-        reg = torch.nn.functional.softplus(self.head_reg(z))
+        direction_logits = self.head_cls(z)   # (B, 3) — [long_wins, short_wins, neither]
+        if self.head_reg is not None:
+            reg = torch.nn.functional.softplus(self.head_reg(z))
+            mfe_long = reg[:, 0]
+            mae_long = reg[:, 1]
+            mfe_short = reg[:, 2]
+            mae_short = reg[:, 3]
+        else:
+            # Regression heads disabled — emit zeros so downstream consumers
+            # that read these fields still get a tensor of the right shape.
+            zero = torch.zeros(direction_logits.shape[0], device=direction_logits.device)
+            mfe_long = mae_long = mfe_short = mae_short = zero
         inflection_logit = self.head_inflection(z).squeeze(-1) if self.head_inflection is not None else None
 
         return HybridOutputs(
-            long_tp_logit=cls[:, 0],
-            short_tp_logit=cls[:, 1],
-            mfe_long=reg[:, 0],
-            mae_long=reg[:, 1],
-            mfe_short=reg[:, 2],
-            mae_short=reg[:, 3],
+            direction_logits=direction_logits,
+            mfe_long=mfe_long,
+            mae_long=mae_long,
+            mfe_short=mfe_short,
+            mae_short=mae_short,
             inflection_logit=inflection_logit,
             fusion_embedding=z if return_embedding else None,
         )

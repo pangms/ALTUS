@@ -150,11 +150,15 @@ def simulate_trading(
         pnl = np.where(full_tp, tp_pts, pnl)
         return pnl - cost_pts_per_trade
 
+    # Per-bar barriers when present (post-audit: vol-scaled labels); fallback to
+    # config constants for backward compat with old truths dicts.
+    tp_arr = truths.get("tp_points", TP_POINTS)
+    sl_arr = truths.get("sl_points", SL_POINTS)
     long_pnl_pts = _pnl_for_side(
-        truths["long_tp"], truths["mfe_long"], truths["mae_long"], TP_POINTS, SL_POINTS
+        truths["long_tp"], truths["mfe_long"], truths["mae_long"], tp_arr, sl_arr
     )
     short_pnl_pts = _pnl_for_side(
-        truths["short_tp"], truths["mfe_short"], truths["mae_short"], TP_POINTS, SL_POINTS
+        truths["short_tp"], truths["mfe_short"], truths["mae_short"], tp_arr, sl_arr
     )
 
     trade_pnl_pts = np.zeros(n, dtype=np.float32)

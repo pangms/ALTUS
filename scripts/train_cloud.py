@@ -71,6 +71,10 @@ def _truths_at(labels, positions: np.ndarray) -> dict:
         "mae_long": labels.mae_long[positions],
         "mfe_short": labels.mfe_short[positions],
         "mae_short": labels.mae_short[positions],
+        # Per-bar barrier sizes (post-audit 2026-05-25 — vol-scaled labels).
+        # Sims pick these up when present for honest PnL with varying barriers.
+        "tp_points": labels.tp_points[positions],
+        "sl_points": labels.sl_points[positions],
     }
 
 

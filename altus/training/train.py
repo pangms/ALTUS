@@ -27,42 +27,45 @@ def _multi_task_loss(
     out, batch, cls_w: float, reg_w: float, reg_scale: float = 30.0, label_smoothing: float = 0.0,
     inflection_w: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """BCE on the classification heads, Huber on the regression heads.
+    """Cross-entropy on the 3-class direction head, optional Huber on regression
+    heads, optional BCE on the inflection auxiliary head.
+
+    POST-AUDIT (2026-05-25): The classification objective is now categorical
+    cross-entropy over {long_wins, short_wins, neither}. The previous design
+    used two independent BCE heads (long_tp, short_tp), which collapsed into
+    a degenerate volatility detector — model predicted P(any TP hits) instead
+    of direction, producing near-identical long/short probs and ~50% top-decile
+    WR. Softmax-3 forces direction prediction because the classes compete in
+    the partition of probability mass.
 
     Regression targets (MFE/MAE in points) are normalized to ratio-of-stop
-    units (divided by reg_scale, default 30 = SL_POINTS) so they're on the
-    same order of magnitude as the BCE loss. Otherwise the raw-points Huber
-    swamps the classification gradient and the head we actually trade on is
-    undertrained.
+    units (divided by reg_scale, default 30 = SL_POINTS). They contribute zero
+    loss when reg_w=0 (the new default) — heads still exist for inference but
+    don't drag the encoder toward magnitude prediction.
 
-    Label smoothing softens hard 0/1 targets to (eps, 1-eps), reducing the
-    model's ability to memorize and improving calibration.
+    Label smoothing softens the one-hot target via PyTorch's built-in CE.
 
     Phase H: if inflection_w > 0 AND out.inflection_logit is not None, also
-    add BCE loss for the inflection auxiliary head.
+    add BCE loss for the inflection auxiliary head. Disabled by default.
     """
-    bce = nn.BCEWithLogitsLoss()
     huber = nn.HuberLoss(delta=1.0)
 
-    # Apply label smoothing to the classification targets
-    long_tgt = batch["long_tp"] * (1 - 2 * label_smoothing) + label_smoothing
-    short_tgt = batch["short_tp"] * (1 - 2 * label_smoothing) + label_smoothing
+    # 3-class cross-entropy on direction. PyTorch's CrossEntropyLoss applies
+    # softmax internally; pass the (B, 3) logits + (B,) class indices.
+    ce = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    cls_loss = ce(out.direction_logits, batch["direction_class"])
 
-    l_long = bce(out.long_tp_logit, long_tgt)
-    l_short = bce(out.short_tp_logit, short_tgt)
-    # Normalize both predictions and targets to the same scale before Huber.
+    # Regression heads — gradient flows only if reg_w > 0.
     l_mfeL = huber(out.mfe_long / reg_scale, batch["mfe_long"] / reg_scale)
     l_maeL = huber(out.mae_long / reg_scale, batch["mae_long"] / reg_scale)
     l_mfeS = huber(out.mfe_short / reg_scale, batch["mfe_short"] / reg_scale)
     l_maeS = huber(out.mae_short / reg_scale, batch["mae_short"] / reg_scale)
-
-    cls_loss = l_long + l_short
     reg_loss = l_mfeL + l_maeL + l_mfeS + l_maeS
+
     total = cls_w * cls_loss + reg_w * reg_loss
     parts = {
         "loss": float(total.detach()),
-        "bce_long": float(l_long.detach()),
-        "bce_short": float(l_short.detach()),
+        "ce_direction": float(cls_loss.detach()),
         "huber_mfeL": float(l_mfeL.detach()),
         "huber_maeL": float(l_maeL.detach()),
         "huber_mfeS": float(l_mfeS.detach()),
@@ -71,6 +74,7 @@ def _multi_task_loss(
 
     # Phase H: auxiliary inflection loss
     if inflection_w > 0 and out.inflection_logit is not None and "inflection" in batch:
+        bce = nn.BCEWithLogitsLoss()
         infl_tgt = batch["inflection"] * (1 - 2 * label_smoothing) + label_smoothing
         l_infl = bce(out.inflection_logit, infl_tgt)
         total = total + inflection_w * l_infl
@@ -161,7 +165,24 @@ def train_model(
 
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.n_epochs)
+    # Linear warmup → cosine decay. Without warmup, AdamW takes a huge gradient
+    # step on epoch 1 from the easiest signal in the data and overfits high-freq
+    # noise from epoch 2 onward (the "best_epoch=1" pathology seen in pre-audit
+    # sweeps). Warmup gives the model 1 epoch to find the basin before cosine
+    # ramps into convergence.
+    warmup_epochs = max(0, int(getattr(cfg, "warmup_epochs", 0)))
+    if warmup_epochs > 0 and cfg.n_epochs > warmup_epochs:
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs,
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cfg.n_epochs - warmup_epochs,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.n_epochs)
 
     train_loader = DataLoader(
         train_set,

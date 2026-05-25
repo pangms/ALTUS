@@ -27,7 +27,11 @@
 set -uo pipefail
 
 BASE="vol,trend,anomaly"
-PHASE_E="round,mtf,absorp,pvd,extension,vreg,sanat,creg,lasym,rhythm,facc,surprise"
+# Phase E PRUNED (post-audit 2026-05-25 per Agent C feature MI analysis):
+#   Kept (high MI):   round, mtf, vreg, sanat, creg, surprise, pvd
+#   Dropped (~0 MI):  absorp, extension, lasym, rhythm, facc
+#   Originally:       round,mtf,absorp,pvd,extension,vreg,sanat,creg,lasym,rhythm,facc,surprise
+PHASE_E="round,mtf,pvd,vreg,sanat,creg,surprise"
 
 ARTIFACTS_DIR="/workspace/ALTUS/artifacts"
 SUMMARY_FILE="$ARTIFACTS_DIR/sweep_baseline_summary_$(date +%Y%m%d_%H%M%S).txt"
@@ -47,20 +51,22 @@ else
 fi
 
 # Parallel arrays: (label, families)
+# Post-audit slim sweep (2026-05-25): the 6-variant comprehensive ablation made
+# sense when we were chasing tiny AUC deltas in a coin-flip model. With the
+# architecture-pivot fixes (3-class direction softmax, vol-scaled barriers,
+# shrunk model, RevIN on), we're testing a different question now: does the
+# combined fix package work, and does each remaining big component (Phase E,
+# BOCPD, SimMTM) earn its place on top of the new baseline?
 LABELS=(
-    "01_baseline"
-    "02_phaseE"
-    "03_phaseF"
-    "04_simmtm"
-    "05_phaseEF"
-    "06_full"
+    "01_baseline"     # rolled-up baseline — vol+trend+anomaly under the new architecture
+    "02_phaseE"       # +Phase E (pruned trader-frame families)
+    "03_phaseF"       # +BOCPD regime (Phase F)
+    "04_full_eFsim"   # full integrated stack — Phase E + F + SimMTM
 )
 FAMILIES_LIST=(
     "$BASE"
     "$BASE,$PHASE_E"
     "$BASE,bocpd"
-    "$BASE,simmtm"
-    "$BASE,$PHASE_E,bocpd"
     "$BASE,$PHASE_E,bocpd,simmtm"
 )
 

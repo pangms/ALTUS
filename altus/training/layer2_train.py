@@ -89,16 +89,24 @@ def select_candidates(
     cand_dir = direction[cand_idx]
     meta_label = np.where(cand_dir > 0, long_won, short_won).astype(np.int8)
 
-    # Realized PnL in points (used for evaluation only — not training)
+    # Realized PnL in points (used for evaluation only — not training).
+    # Uses per-bar barriers from the labeler when present (vol-scaled mode),
+    # else falls back to config constants (fixed mode / older callers).
     mfeL = labels.mfe_long[cand_idx]
     maeL = labels.mae_long[cand_idx]
     mfeS = labels.mfe_short[cand_idx]
     maeS = labels.mae_short[cand_idx]
-    from altus.config import SL_POINTS, TP_POINTS
-    long_pnl = np.where(long_won == 1, TP_POINTS,
-                        np.where(maeL >= SL_POINTS, -SL_POINTS, mfeL - maeL))
-    short_pnl = np.where(short_won == 1, TP_POINTS,
-                         np.where(maeS >= SL_POINTS, -SL_POINTS, mfeS - maeS))
+    if hasattr(labels, "tp_points") and labels.tp_points is not None:
+        tp_arr = labels.tp_points[cand_idx]
+        sl_arr = labels.sl_points[cand_idx]
+    else:
+        from altus.config import SL_POINTS, TP_POINTS
+        tp_arr = np.full(len(cand_idx), TP_POINTS, dtype=np.float32)
+        sl_arr = np.full(len(cand_idx), SL_POINTS, dtype=np.float32)
+    long_pnl = np.where(long_won == 1, tp_arr,
+                        np.where(maeL >= sl_arr, -sl_arr, mfeL - maeL))
+    short_pnl = np.where(short_won == 1, tp_arr,
+                         np.where(maeS >= sl_arr, -sl_arr, mfeS - maeS))
     realized_pnl_pts = np.where(cand_dir > 0, long_pnl, short_pnl).astype(np.float32)
 
     # Subset Layer 1 outputs to just the candidates
