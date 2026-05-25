@@ -179,7 +179,10 @@ def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
     for window_bars, label in [(5, "5m"), (60, "60m"), (240, "4h")]:
         signal = _aggregate_to_scale(log_ret, window_bars)
         # Standardize so BOCPD's Gaussian-like prior fits
-        sig_std = signal.rolling(2000, min_periods=100).std().replace(0, np.nan).bfill().fillna(1.0)
+        # Causal warmup fill: ffill carries past stds forward; fillna(1.0) handles the
+        # very first window. Earlier versions used .bfill() which leaked future std
+        # values into warmup positions — caught in 2026-05-24 audit.
+        sig_std = signal.rolling(2000, min_periods=100).std().replace(0, np.nan).ffill().fillna(1.0)
         z = (signal / sig_std).fillna(0.0).clip(-5, 5).to_numpy()
 
         # Decimated input: every `stride` bars

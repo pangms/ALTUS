@@ -52,10 +52,12 @@ class ConformalGate:
 
         # Conformity scores: how wrong was each prediction?
         scores = np.abs(cal_probs - cal_labels)
-        # Conformal quantile: (n+1)*(1-alpha)/n th order statistic
-        k = int(np.ceil((n + 1) * (1 - self.alpha)) / n * n)
-        k = min(k, n)
-        self._q_lo = float(np.quantile(scores, 1 - self.alpha, method="higher"))
+        # Conformal quantile with the (n+1)/n finite-sample correction. Earlier
+        # versions computed `int(np.ceil((n+1)*(1-alpha))/n*n)` which is a no-op
+        # under int-cast and the actual quantile used `1-alpha` — anti-conservative
+        # for small n. Caught in 2026-05-24 audit.
+        q_level = min(np.ceil((n + 1) * (1 - self.alpha)) / n, 1.0)
+        self._q_lo = float(np.quantile(scores, q_level, method="higher"))
         self._q_hi = self._q_lo
         return self
 
