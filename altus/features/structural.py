@@ -29,6 +29,7 @@ from altus.features.families import (
     liquidity_asymmetry,
     liquidity_zones,
     mtf_alignment,
+    prior_day_anchors,
     pv_divergence,
     round_levels,
     session_anatomy,
@@ -37,9 +38,11 @@ from altus.features.families import (
     sweep_detection,
     tape_rhythm,
     trend_hurst,
+    trend_structure,
     vol_regime,
     volatility,
     volume_profile,
+    vwap_anchors,
 )
 
 
@@ -81,6 +84,11 @@ _FAMILY_REGISTRY = {
     # Phase K: SimMTM self-supervised embeddings — Q27 (pattern similarity).
     # Cache-only — requires pretrain_simmtm.py + build_simmtm_cache.py.
     "simmtm":    simmtm,               # 96-D SSL embedding per bar
+    # Tier-2 follow-ups (2026-05-25 post-audit). The discretionary-trader
+    # horizontal anchors that EMA/Hurst/KDE could not surface sharply.
+    "pda":       prior_day_anchors,    # Q11/Q12/Q14 — PDH/PDL/ONH/ONL/RTH-open + gap (9 feats)
+    "vwap":      vwap_anchors,         # Q6/Q7/Q9 — session VWAP + ±1σ bands + slope (5 feats)
+    "tstruct":   trend_structure,      # Q19 — HH/HL/LH/LL state machine + swing age/dist (6 feats)
 }
 
 

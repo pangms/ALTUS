@@ -62,12 +62,14 @@ LABELS=(
     "02_phaseE"       # +Phase E (pruned trader-frame families)
     "03_phaseF"       # +BOCPD regime (Phase F)
     "04_full_eFsim"   # full integrated stack — Phase E + F + SimMTM
+    "05_full_plus_anchors"  # 04 + Tier-2 structural anchors (PDA + VWAP + trend_structure)
 )
 FAMILIES_LIST=(
     "$BASE"
     "$BASE,$PHASE_E"
     "$BASE,bocpd"
     "$BASE,$PHASE_E,bocpd,simmtm"
+    "$BASE,$PHASE_E,bocpd,simmtm,pda,vwap,tstruct"
 )
 
 echo " Specs scheduled: ${#LABELS[@]} runs" | tee -a "$SUMMARY_FILE"

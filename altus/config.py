@@ -159,17 +159,24 @@ class ModelConfig:
     xlstm_dropout: float = 0.10
 
     # Output heads:
-    #   3 classification (long_wins, short_wins, neither) — single softmax-3 (post-audit fix).
-    #   0 regression by default (post-audit) — kept ONLY if explicitly set > 0.
-    #     Regression heads ate ~28% of gradient on a task that's pure classification.
+    #   3 classification (long_wins, short_wins, neither) — single softmax-3.
+    #   4 regression (mfe_long, mae_long, mfe_short, mae_short) — re-enabled
+    #     2026-05-25 (Tier 1 follow-up): the architectural pivot disabled these
+    #     thinking they were part of the direction-blindness bug, but the bug
+    #     was caused by *independent BCE heads*, not by multi-task regression.
+    #     With softmax-3 owning direction, the regression heads are safe to keep
+    #     at low loss-weight — they inject forward-looking MFE/MAE gradient into
+    #     the shared encoder. Also fixes 5 dead L2 features.
     n_class_heads: int = 3
-    n_reg_heads: int = 0
+    n_reg_heads: int = 4
 
-    # Phase H: auxiliary inflection head — DISABLED by default post-audit.
-    # The dedicated inflection model (planned Phase F) will replace this aux head;
-    # the shared-encoder aux version couldn't disagree with the main head and was
-    # crowding gradient. Re-enable via use_inflection=True for A/B.
-    use_inflection: bool = False
+    # Phase H: auxiliary inflection head — re-enabled 2026-05-25 (Tier 1).
+    # Same logic as regression heads: the pivot disabled this collaterally with
+    # the direction fix. The inflection label (Q26) is genuinely orthogonal
+    # signal that the dedicated direction softmax can't capture (predicts
+    # *reversal* not direction). Kept at low loss weight (0.05) to avoid
+    # crowding the primary objective.
+    use_inflection: bool = True
 
     # RevIN — ENABLED by default post-audit (was False, big OOS-shift cost).
     # Per-instance z-score + learnable affine. The val→OOS AUC gap of ~0.14
@@ -243,12 +250,15 @@ class TrainConfig:
     label_smoothing: float = 0.10  # softens CE targets — was 0.05
     input_feature_dropout: float = 0.10  # was 0.05 — kill more feature noise
     # Multi-task loss weights:
-    #   cls = 3-class direction cross-entropy (the ONLY thing we trade on)
-    #   reg = MFE/MAE Huber — disabled by default (was 0.2)
-    #   inflection = aux BCE head — disabled by default (was 0.15)
+    #   cls = 3-class direction cross-entropy (primary objective)
+    #   reg = MFE/MAE Huber on direction-conditional excursions — small weight
+    #         (0.05) injects forward-looking gradient without dominating CE.
+    #         Was 0.2 pre-pivot (caused independent-BCE collapse, not MFE/MAE).
+    #   inflection = aux BCE head for Q26 — small weight (0.05) regularizes
+    #         the shared encoder with reversal-vs-continuation signal.
     cls_loss_weight: float = 1.0
-    reg_loss_weight: float = 0.0
-    inflection_loss_weight: float = 0.0
+    reg_loss_weight: float = 0.05
+    inflection_loss_weight: float = 0.05
     early_stop_patience: int = 4
     val_metric: str = "mean_auc"     # what early stopping watches
     num_workers: int = 0              # MPS works best single-process

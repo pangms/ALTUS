@@ -63,8 +63,12 @@ def select_candidates(
 ) -> Candidates:
     """Pick the Layer 1 candidate signals we'll ask Layer 2 to score.
 
-    'Candidate' = a bar where Layer 1's max-side probability is in the top K%
-    of the distribution (matches our percentile-threshold trading sim).
+    'Candidate' = a bar where L1's DIRECTIONAL MARGIN |P(long) - P(short)|
+    is in the top K%. Margin replaces max(long_p, short_p) as the selection
+    metric post-2026-05-25 pivot — under the new 3-class softmax, max collapses
+    to "1 - P(neither)" which is near 1 for >99% of bars; ranking by it picks
+    "model has any opinion" rather than "model has a strong directional opinion."
+    Margin is the actually-informative confidence under softmax.
     """
     long_p = np.asarray(layer1_outputs["long_tp_prob"], dtype=np.float64)
     short_p = np.asarray(layer1_outputs["short_tp_prob"], dtype=np.float64)
@@ -72,11 +76,12 @@ def select_candidates(
 
     # Direction: which side did Layer 1 favor more?
     direction = np.where(long_p >= short_p, 1, -1)
-    max_p = np.maximum(long_p, short_p)
+    # Confidence metric: directional MARGIN (the correct measure under softmax-3).
+    confidence = np.abs(long_p - short_p)
 
     if cfg.candidate_mode == "top_k_percent":
         k = max(1, int(np.ceil(cfg.candidate_top_k * n)))
-        cand_idx = np.argpartition(-max_p, k)[:k]
+        cand_idx = np.argpartition(-confidence, k)[:k]
         cand_idx = np.sort(cand_idx)
     elif cfg.candidate_mode == "all_bars":
         cand_idx = np.arange(n, dtype=np.int64)

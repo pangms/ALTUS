@@ -128,9 +128,14 @@ def derive_signal_features(layer1_outputs: dict[str, np.ndarray]) -> dict[str, n
     direction = np.where(pL >= pS, 1.0, -1.0)
     strength = np.maximum(pL, pS)
     margin = np.abs(pL - pS)
-    # Binary entropy of the winning side's probability
-    p = np.clip(strength, EPS, 1.0 - EPS)
-    entropy = -(p * np.log(p) + (1.0 - p) * np.log(1.0 - p))
+    # 3-class softmax entropy (long_wins, short_wins, neither). Under the
+    # post-pivot direction softmax, long_p and short_p are slices of a simplex
+    # with implicit neither_p = 1 - long_p - short_p. True entropy proxies
+    # Q30 (model confidence). High entropy = uncertain across all 3 outcomes.
+    pN = np.clip(1.0 - pL - pS, EPS, 1.0)
+    pL_c = np.clip(pL, EPS, 1.0)
+    pS_c = np.clip(pS, EPS, 1.0)
+    entropy = -(pL_c * np.log(pL_c) + pS_c * np.log(pS_c) + pN * np.log(pN))
     # Expected R-multiple from the winning side's predicted excursion
     winning_mfe = np.where(direction > 0, mfeL, mfeS)
     winning_mae = np.where(direction > 0, maeL, maeS)
