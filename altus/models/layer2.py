@@ -102,6 +102,14 @@ LAYER2_INPUT_FEATURES = (
     "trend_strength",
     # --- Anomaly ---
     "anomaly_mahalanobis",
+    # --- BOCPD regime posterior at 3 timescales (Phase F, Q19/Q20) ---
+    # Added 2026-05-24 — closes the "L2 has no regime context" gap flagged
+    # in the architecture audit. Requires the bocpd feature family to be
+    # included in the L1 run; absent columns are zero-filled by
+    # build_layer2_input's missing-column fallback.
+    "bocpd_age_5m", "bocpd_cp_prob_5m", "bocpd_entropy_5m",
+    "bocpd_age_60m", "bocpd_cp_prob_60m", "bocpd_entropy_60m",
+    "bocpd_age_4h", "bocpd_cp_prob_4h", "bocpd_entropy_4h",
 )
 
 

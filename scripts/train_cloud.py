@@ -38,6 +38,7 @@ from altus.splits import purged_walk_forward
 from altus.training import evaluate_predictions, train_model
 from altus.training.calibration import calibrate_predictions
 from altus.training.dataset import ALTUSDataset, collate
+from altus.training.production_sim import L3Config, simulate_l3
 from altus.training.sim_pnl import SimConfig, simulate_trading
 from altus.training.train import _predict, _select_device
 
@@ -92,6 +93,45 @@ def _run_percentile_sweep(timestamps, preds, truths, ks=(0.01, 0.05, 0.10, 0.20)
         }
         print(f"    K={int(k*100):>3}%: {sim.summary_line()}")
     return out
+
+
+def _run_l3_sim(timestamps, preds, truths) -> dict:
+    """Run the L3.1 production sim and return a serializable summary.
+
+    Reports the honest production-rule metrics (no-overlap + A++ pyramid +
+    grade-sized + EoD flatten + consecutive-loss cooldown). Replaces the
+    `sim_pnl` numbers as the authoritative reference once L3 is the live
+    execution layer; we keep both during the transition for A/B.
+    """
+    res = simulate_l3(timestamps, preds, truths, cfg=L3Config())
+    print(f"    L3.1:    {res.summary_line()}")
+    return {
+        "n_trades": res.n_trades,
+        "n_long": res.n_long,
+        "n_short": res.n_short,
+        "n_trades_by_grade": res.n_trades_by_grade,
+        "n_pyramid_entries": res.n_pyramid_entries,
+        "avg_position_size": res.avg_position_size,
+        "max_concurrent_contracts": res.max_concurrent_contracts,
+        "win_rate": res.win_rate,
+        "avg_r": res.avg_r,
+        "expectancy_usd": res.expectancy_usd,
+        "total_pnl_usd": res.total_pnl_usd,
+        "sharpe": res.sharpe,
+        "sortino": res.sortino,
+        "max_drawdown_pct": res.max_drawdown_pct,
+        "profit_factor": res.profit_factor,
+        "trades_per_day": res.trades_per_day,
+        "pct_positive_months": res.pct_positive_months,
+        "worst_day_pnl_usd": res.worst_day_pnl_usd,
+        "worst_intraday_dd_usd": res.worst_intraday_dd_usd,
+        "n_days_would_trip_daily_loss": res.n_days_would_trip_daily_loss,
+        "n_days_would_trip_trailing_dd": res.n_days_would_trip_trailing_dd,
+        "n_eod_entries_blocked": res.n_eod_entries_blocked,
+        "n_eod_force_flattened": res.n_eod_force_flattened,
+        "n_cooldown_entries_blocked": res.n_cooldown_entries_blocked,
+        "max_consecutive_losses": res.max_consecutive_losses,
+    }
 
 
 def _serialize_metrics(m) -> dict | None:
@@ -272,18 +312,32 @@ def main():
 
             # Save val predictions + truths for Layer 2 training downstream
             # (Layer 2 needs L1 predictions on data L1 didn't train on; val is exactly that)
+            # Re-predict on val with return_embeddings=True so L2's optional
+            # embedding-projection path works without a separate extract pass.
+            val_loader_for_emb = DataLoader(val_ds, batch_size=cfg.batch_size,
+                                            shuffle=False, collate_fn=collate)
+            val_preds_with_emb, _ = _predict(model, val_loader_for_emb, device,
+                                             return_embeddings=True)
             val_dump = {
                 "fold": int(fold.fold),
                 "val_positions": val_ds.sample_positions.astype(np.int64),
                 "val_preds_raw": {k: result.val_preds[k].astype(np.float32) for k in result.val_preds},
                 "val_truths": {k: result.val_truths[k] for k in result.val_truths},
             }
+            extra_dump = {}
+            if "fusion_embedding" in val_preds_with_emb:
+                # Save embeddings as float16 to halve disk footprint (matches the
+                # extract_layer1_val_preds convention).
+                extra_dump["val_preds_fusion_embedding"] = (
+                    val_preds_with_emb["fusion_embedding"].astype(np.float16)
+                )
             np.savez_compressed(
                 artifacts_dir / f"{variant}_fold{fold.fold}_val_preds.npz",
                 **{f"val_preds_{k}": v for k, v in val_dump["val_preds_raw"].items()},
                 **{f"val_truths_{k}": v for k, v in val_dump["val_truths"].items()},
                 val_positions=val_dump["val_positions"],
                 fold=val_dump["fold"],
+                **extra_dump,
             )
 
             # Calibration on cal-fit slice
@@ -300,6 +354,11 @@ def main():
             val_truths_for_sim = _truths_at(labels, val_kept)
             print("  VAL percentile sweep (calibrated):")
             val_sweep = _run_percentile_sweep(val_ts, val_preds_cal, val_truths_for_sim)
+            # L3.1 production sim — the production-honest analog. Reports the
+            # numbers we'd actually realize under no-overlap + grade sizing +
+            # EoD flatten + consecutive-loss cooldown.
+            print("  VAL L3.1 production sim (calibrated):")
+            val_l3 = _run_l3_sim(val_ts, val_preds_cal, val_truths_for_sim)
 
             all_results[variant]["folds"].append({
                 "fold": fold.fold,
@@ -309,6 +368,7 @@ def main():
                 "val_raw": _serialize_metrics(result.val_metrics),
                 "val_cal": _serialize_metrics(val_metrics_cal),
                 "val_sim_sweep": val_sweep,
+                "val_l3_sim": val_l3,
                 "n_params": n_params,
                 "checkpoint": str(ckpt_path),
             })
@@ -351,11 +411,14 @@ def main():
             oos_truths_for_sim = _truths_at(labels, oos_kept)
             print("  OOS percentile sweep (calibrated):")
             oos_sweep = _run_percentile_sweep(oos_ts, oos_preds_cal, oos_truths_for_sim)
+            print("  OOS L3.1 production sim (calibrated):")
+            oos_l3 = _run_l3_sim(oos_ts, oos_preds_cal, oos_truths_for_sim)
 
             all_results[variant]["oos"] = {
                 "raw": _serialize_metrics(oos_metrics_raw),
                 "cal": _serialize_metrics(oos_metrics_cal),
                 "sim_sweep": oos_sweep,
+                "l3_sim": oos_l3,
             }
 
     # ----- Final summary against acceptance criteria ----------------------
@@ -383,6 +446,15 @@ def main():
                 print(f"  sim {k_label:>9}: trades={s['n_trades']:,}  win={s['win_rate']:.3f}  "
                       f"PnL=${s['total_pnl_usd']:,.0f}  Sharpe={s['sharpe']:.2f}  "
                       f"DD={s['max_drawdown_pct']:.1%}  TPD={s['trades_per_day']:.1f}")
+        # L3.1 production sim summary — the production-honest read.
+        l3 = r.get("oos", {}).get("l3_sim") if r.get("oos") else r["folds"][-1].get("val_l3_sim")
+        if l3:
+            gb = l3["n_trades_by_grade"]
+            print(f"  L3.1 prod : trades={l3['n_trades']:,} ({l3['n_long']}L/{l3['n_short']}S) "
+                  f"B/A/A+/A++={gb['B']}/{gb['A']}/{gb['A+']}/{gb['A++']} pyr={l3['n_pyramid_entries']}"
+                  f"  win={l3['win_rate']:.3f}  PnL=${l3['total_pnl_usd']:,.0f}  "
+                  f"Sharpe={l3['sharpe']:.2f}  DD={l3['max_drawdown_pct']:.1%}  "
+                  f"TPD={l3['trades_per_day']:.1f}  maxStack={l3['max_concurrent_contracts']}")
 
     metrics_path = artifacts_dir / "metrics.json"
     with open(metrics_path, "w") as f:

@@ -140,6 +140,7 @@ def main():
         time_to_long_tp=labels.time_to_long_tp[val_positions],
         time_to_short_tp=labels.time_to_short_tp[val_positions],
         entry_price=labels.entry_price[val_positions],
+        inflection_label=labels.inflection_label[val_positions],
     )
 
     # ---- Select Layer 1 candidates ----------------------------------------
@@ -234,6 +235,44 @@ def main():
             l2_threshold=thresh, use_conformal=True, conformal_gate=result.conformal,
         )
         print(f"  threshold={thresh:.2f}: {cascade.summary_line()}")
+
+    # ---- L3.1 production-honest cascade sim --------------------------------
+    # Project L2 calibrated probs back to per-bar long/short arrays, then run
+    # the L3 sim. This is the headline number — what actually lands in PnL
+    # under no-overlap + grade sizing + EoD flatten + cooldown.
+    print("\n" + "=" * 72)
+    print(" L3.1 production sim — L1+L2 cascade (val slice)")
+    print("=" * 72)
+    from altus.training.production_sim import L3Config, simulate_l3
+    n_full = len(labels_val.index)
+    long_prob_l2 = np.zeros(n_full, dtype=np.float32)
+    short_prob_l2 = np.zeros(n_full, dtype=np.float32)
+    val_cal_p = result.val_probs_calibrated.astype(np.float32)
+    val_cand_global = val_cands.indices                    # positions into labels_val
+    long_mask = val_cands.direction > 0
+    long_prob_l2[val_cand_global[long_mask]] = val_cal_p[long_mask]
+    short_prob_l2[val_cand_global[~long_mask]] = val_cal_p[~long_mask]
+    val_start_ts = labels_val.index[val_cand_global.min()]
+    eval_mask = labels_val.index >= val_start_ts
+    truths_eval = {
+        "long_tp": labels_val.long_tp[eval_mask].astype(np.float32),
+        "short_tp": labels_val.short_tp[eval_mask].astype(np.float32),
+        "mfe_long": labels_val.mfe_long[eval_mask],
+        "mae_long": labels_val.mae_long[eval_mask],
+        "mfe_short": labels_val.mfe_short[eval_mask],
+        "mae_short": labels_val.mae_short[eval_mask],
+    }
+    l3_res = simulate_l3(
+        labels_val.index[eval_mask].values,
+        {"long_tp_prob": long_prob_l2[eval_mask],
+         "short_tp_prob": short_prob_l2[eval_mask]},
+        truths_eval,
+        cfg=L3Config(),
+    )
+    print(f"  {l3_res.summary_line()}")
+    print(f"  worst_day=${l3_res.worst_day_pnl_usd:,.0f}  "
+          f"days_trip_trail_dd={l3_res.n_days_would_trip_trailing_dd}  "
+          f"max_consec_losses={l3_res.max_consecutive_losses}")
 
     # ---- Save trained Layer 2 + outputs -----------------------------------
     out_dir = ARTIFACT_DIR / f"layer2_{int(time.time())}"

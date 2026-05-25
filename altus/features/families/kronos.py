@@ -267,14 +267,20 @@ def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
     from altus.config import ARTIFACT_DIR
     cache_path = ARTIFACT_DIR / "kronos_features.parquet"
     if not cache_path.exists():
-        raise RuntimeError(
-            f"Kronos features cache not found at {cache_path}.\n"
-            f"Kronos features must be pre-computed before training (it's a heavy GPU op).\n"
-            f"Run on a CUDA-equipped machine:\n"
-            f"    python scripts/build_kronos_cache.py --start 2021-01-01 --end 2026-04-01\n"
-            f"This takes ~25 GPU-hours on RTX 4090 once. After that, all training runs\n"
-            f"load these features instantly.\n"
-            f"To train WITHOUT Kronos features for now, omit 'kronos' from --families."
+        # Soft fallback: emit a NaN-filled DataFrame so a training run with
+        # `kronos` in --families doesn't die. We log a loud warning so the
+        # user knows the cache wasn't built. Earlier versions raised; that
+        # broke any sweep that accidentally enabled kronos. Caught in 2026-05-24 audit.
+        log.warning(
+            f"Kronos cache MISSING at {cache_path} — emitting NaN-filled features. "
+            f"Run scripts/build_kronos_cache.py on a CUDA box (~25 GPU-hours) to "
+            f"populate it. Until then, the kronos family contributes nothing."
+        )
+        n = len(df_1m)
+        return pd.DataFrame(
+            np.full((n, len(FEATURE_COLUMNS)), np.nan, dtype=np.float32),
+            index=df_1m.index,
+            columns=list(FEATURE_COLUMNS),
         )
     log.info(f"Loading Kronos features from cache: {cache_path}")
     cached = pd.read_parquet(cache_path)
