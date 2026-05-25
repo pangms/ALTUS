@@ -62,40 +62,61 @@ When components overlap and agree, that's confidence amplification. When they di
 
 ---
 
-## 3. The Philosophical Framework — 34 Questions
+## 3. The Predictive Question Framework
 
-The system is designed to answer 34 questions an experienced discretionary trader asks. They were developed from a 22-question source document plus 12 additions made during architectural review.
+**Current canonical framework: see [FRAMEWORK.md](FRAMEWORK.md) and [SETUPS.md](SETUPS.md).**
 
-The full text of all 34 questions lives in `~/.claude/projects/-Users-michaelpang-ALTUS/memory/philosophical_questions_framework.md`. Summarized by category:
+The system is designed BACKWARD from a "high-WR machine" — every component justifies itself against a predictive question on the framework. After the architectural audit on 2026-05-25, the framework was restructured from the original 34 descriptive questions to ~45 questions organized in 8 groups, of which ~25 are explicitly predictive.
 
-### I — Order Flow & Sponsorship (Q1-Q5, Q29, Q32)
-Who is driving this move? Is order flow accumulating or distributing? Is the flow transactional or directional? Is volume confirming the move or diverging? Absorption vs conviction? Tape rhythm (steady vs spasmodic)? Flow acceleration (deceleration as reversal signal)?
+### Why the framework was restructured
 
-### II — Auction State & Value (Q6-Q10)
-Are we inside accepted value, at the edge, or in price discovery? Imbalanced (trending) vs balanced (ranging)? Which timeframe is in control? Have prices been accepted or rejected? Where are the HVNs and LVNs?
+Rigorous classification of the original 34 questions showed only **4 (12%) were truly predictive** ("what is likely to happen next?"). The other 30 were descriptive ("where are we now?") — leaving the model to bridge state → direction from raw co-occurrence. With ~140k training samples and 230 features, that combinatorial task is too large; top-decile WR converged to base rate.
 
-### III — Liquidity, Obstacles & Path (Q11-Q14, Q28)
-Where is resting liquidity? What obstacles between current price and target? Has the move already extended? Trapped participants nearby? Liquidity asymmetry (above vs below) → directional gravity?
+The new framework inverts the ratio: predictive questions are explicit, descriptive questions are demoted to MODULATORS that condition the interpretation of predictive answers.
 
-### IV — Forced Flow & Trapped Participants (Q15-Q18)
-Who is wrong-sided and at what price are they forced to act? Stop-run fuel vs genuine new participation? Crowded positioning? Slow squeeze building?
+### The 8 groups (at a glance)
 
-### V — Regime, Bias & Self-Awareness (Q19-Q23, Q25, Q27, Q30)
-Stale regime classification? Regime confirmed today? Is consensus about to be punished? Vol regime expansion/contraction? Correlation regime breakdown? Pattern similarity to historical setups? Model self-confidence + component agreement?
+| Group | Purpose | Status |
+|---|---|---|
+| **A** | Setup detection (8 questions) | Predictive — anchor of the framework |
+| **B** | Directional bias given context (4) | Predictive |
+| **C** | Magnitude & path (5) | Predictive — closes the "anticipation deficit" |
+| **D** | Failure modes (4) | Predictive — feeds risk + sizing |
+| **E** | Confirmation triggers (4) | Predictive — enables confirmation entries |
+| **F** | Modulators (15, was the descriptive layer) | Conditions interpretation of A-E |
+| **G** | Self-awareness (4) | Meta — confidence, drift |
+| **H** | Aspirational (3) | Deferred — needs alt-data |
 
-### VI — Temporal & Move Dynamics (Q24, Q26, Q31, Q33)
-Where in the session's natural arc are we? Inflection vs continuation likelihood? Move lifecycle phase (initiation/acceleration/exhaustion/termination)? Expected vs actual surprise?
+**Coverage target with v1 + H-tier alt-data:** ~45 of ~45 questions well-answered.
 
-### VII — External Context (Q34) — *aspirational*
-What scheduled events shape today's character?
+### Setup library (Group A — anchors the whole framework)
 
-**Honest gaps** (explicitly accepted, will remain partial for v1):
-- **Q1** (large-lot prints): Ceiling-limited by 1m OHLCV data; tick T&S would close
-- **Q17, Q21** (positioning): Requires COT + options OI + sentiment data (alt-data Phase, future)
-- **Q22** (post-entry thesis): Requires Layer 3/4 execution logic
-- **Q34** (external context): Requires economic calendar + news ingestion (alt-data Phase, future)
+The 8 setups, fully specified in [SETUPS.md](SETUPS.md):
 
-**Coverage target**: 30 of 34 questions well-answered by the planned L1+L2 architecture.
+| ID | Setup | Est WR | Notes |
+|---|---|---|---|
+| A1 | Open Range Breakout | 0.55-0.60 | NY RTH first hour |
+| A2 | VWAP Rejection/Reclaim | 0.55-0.60 | Trending sessions |
+| A3 | Failed Sweep / Liquidity Trap | 0.60-0.65 | Highest-WR pattern in the library |
+| A4 | Trend Pullback | 0.55-0.60 | Confirmed-trend continuations |
+| A5 | Compression Breakout | 0.52-0.57 | Vol-cycle expansions |
+| A6 | Failed Auction | 0.60-0.65 | Multi-touch level rejection |
+| A7 | End-of-Day Reversion | 0.55-0.58 | Position-squaring window |
+| A8 | Multi-Touch Level Defense | 0.58-0.62 | High-touch S/R fades |
+
+WR estimates are upper-bound expectations subject to empirical recalibration per [[feedback-empirical-verification]].
+
+### Honest gaps (deferred to H-tier alt-data phase)
+
+- **H1 — Positioning** (was Q17, Q21): Requires COT + options OI + sentiment
+- **H2 — News/calendar** (was Q34): Requires economic calendar + news feed
+- **H3 — Tick microstructure** (was Q1, Q3): Requires CME L2 + T&S
+
+These remain accepted v1 gaps. Setup detection in A-tier uses available 1m OHLCV proxies; the H-tier closes them properly when alt-data ships.
+
+### Reference: the original descriptive framework
+
+The original 34-question framework remains in history as `memory/philosophical_questions_framework.md`. Its categories (Order Flow, Auction State, Liquidity & Path, Forced Flow, Regime, Temporal, External Context) are still useful for thinking about which DESCRIPTIVE primitives matter — they're preserved as F-tier modulators in the new framework. But they no longer drive directional decisions on their own.
 
 ---
 
