@@ -294,6 +294,13 @@ def simulate_l3(
         return _empty_result()
 
     ts_idx = pd.DatetimeIndex(timestamps)
+    # Normalize to tz-naive UTC for internal math. Real labels.index from
+    # altus.data.load_mnq is tz-aware (UTC); synthetic smoke-test timestamps
+    # are tz-naive. The internal NY-close arithmetic (`_next_ny_rth_close_utc`)
+    # returns naive UTC, so we standardize at the boundary to avoid mixed-tz
+    # comparisons.
+    if ts_idx.tz is not None:
+        ts_idx = ts_idx.tz_convert("UTC").tz_localize(None)
     sort_order = np.argsort(ts_idx.values)
     ts_sorted = ts_idx[sort_order]
     long_p = preds["long_tp_prob"][sort_order]
