@@ -80,15 +80,29 @@ N_WALK_FORWARD_FOLDS = 5         # walk-forward folds inside the dev set
 # ---------------------------------------------------------------------------
 # Feature pipeline
 # ---------------------------------------------------------------------------
-TIMEFRAMES_MIN = (1, 3, 5, 15)  # multi-timeframe stack
+TIMEFRAMES_MIN = (1, 3, 5, 15, 30, 60)  # multi-timeframe stack (expanded 2026-05-24 — adds 30m/60m HTF context)
 SEQ_LEN_BARS = 240               # context window length the model sees (1m bars)
                                  # 240 = 4 hours of 1m context, captures session memory
 ROLL_NORM_WINDOW = 1440          # 1 day of 1m bars for rolling z-score normalization
 
+# Primary candle aggregation. The encoder's PRIMARY input is computed on a
+# rolling window of `PRIMARY_WINDOW_MIN` 1-min bars updated every 1 min — so
+# decisions still poll at 1m granularity, but the per-step content is a
+# trailing N-min window. This kills most 1m microstructure noise while
+# preserving entry-time granularity. Set to 1 to disable (raw 1m primary).
+# Overridable via env var for A/B sweeps: ALTUS_PRIMARY_WINDOW_MIN=1
+import os as _os
+PRIMARY_WINDOW_MIN = int(_os.environ.get("ALTUS_PRIMARY_WINDOW_MIN", "3"))
+
 
 # Layer 1 v2 final: survivors of Phase A sweep. Comma-separated string passed
 # to StructuralSpec.from_string. Used by train_layer1_final.py.
-LAYER1_V2_STRUCTURAL_FAMILIES = "vol,trend,anomaly"
+#
+# `bocpd` (Phase F) is included so that downstream L2 has regime context
+# available when reconstructing features — without it, the BOCPD columns in
+# LAYER2_INPUT_FEATURES silently zero-fill via the missing-column fallback,
+# defeating the point.
+LAYER1_V2_STRUCTURAL_FAMILIES = "vol,trend,anomaly,bocpd"
 
 
 # ---------------------------------------------------------------------------

@@ -135,8 +135,13 @@ def _volume_decay_slope(open_: pd.Series, close: pd.Series, volume: pd.Series, l
     return pd.Series(out, index=close.index)
 
 
-def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
+NEEDS_RAW_1M = True  # uses _resample_ohlcv → must see clean non-overlapping 1m bars
+
+
+def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.DataFrame:
     """Compute exhaustion features. Returns 5 columns."""
+    if df_1m is None:
+        df_1m = df_primary  # back-compat / PRIMARY_WINDOW_MIN=1 path
     # 5m and 15m RSI divergences
     df_5m = _resample_ohlcv(df_1m, 5)
     df_15m = _resample_ohlcv(df_1m, 15)

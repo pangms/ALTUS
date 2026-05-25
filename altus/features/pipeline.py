@@ -25,7 +25,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from altus.config import ROLL_NORM_WINDOW, TIMEFRAMES_MIN
+from altus.config import PRIMARY_WINDOW_MIN, ROLL_NORM_WINDOW, TIMEFRAMES_MIN
+from altus.data.rolling_ohlcv import build_rolling_ohlcv
 
 
 EPS = 1e-9
@@ -161,6 +162,7 @@ class FeatureSpec:
     timeframes_min: tuple[int, ...] = TIMEFRAMES_MIN
     roll_norm_window: int = ROLL_NORM_WINDOW
     causal_shift: bool = True       # shift the whole matrix by 1 — see module docstring
+    primary_window_min: int = PRIMARY_WINDOW_MIN  # rolling-N-min primary candle (1 disables)
 
 
 def build_features(
@@ -173,15 +175,37 @@ def build_features(
     Input: df_1m with columns ['open','high','low','close','volume'], UTC-indexed.
     Output: causally-shifted, NaN-trimmed feature DataFrame on the same 1m index.
 
+    Primary-candle behavior (added 2026-05-24):
+    When `spec.primary_window_min > 1`, the smallest-TF block in the multi-TF
+    stack uses a ROLLING N-min window updated every 1 minute (so per-step
+    content is smoothed but decision cadence stays at 1m). The structural
+    families also receive this rolling primary. HTF blocks (3, 5, 15, 30, 60)
+    are still built from raw 1m via non-overlapping `_resample_ohlcv`, because
+    naïvely resampling overlapping rolling bars would triple-count volume and
+    leak window boundaries.
+
     If `structural_spec` is provided (an altus.features.StructuralSpec), the
     enabled Phase A families are also computed and joined onto the price features.
     """
     spec = spec or FeatureSpec()
     grid = df_1m.index
 
+    # Build the rolling-primary base once; reused for the smallest-TF block
+    # AND passed to structural families.
+    df_primary = (
+        build_rolling_ohlcv(df_1m, spec.primary_window_min)
+        if spec.primary_window_min > 1 else df_1m
+    )
+
     all_blocks: list[pd.DataFrame] = []
+    smallest_tf = min(spec.timeframes_min)
     for tf in spec.timeframes_min:
-        ohlcv_tf = _resample_ohlcv(df_1m, tf)
+        if tf == smallest_tf and spec.primary_window_min > 1:
+            # Rolling-primary path: per-step content covers the trailing
+            # `primary_window_min` minutes; index is still at every minute.
+            ohlcv_tf = df_primary
+        else:
+            ohlcv_tf = _resample_ohlcv(df_1m, tf)
         feats_tf = _features_one_tf(ohlcv_tf, tf)
         feats_aligned = _align_to_1m_grid(feats_tf, tf, grid)
         all_blocks.append(feats_aligned)
@@ -192,10 +216,12 @@ def build_features(
     if spec.causal_shift:
         X = X.shift(1)
 
-    # Append structural features (already causally shifted in their own module)
+    # Append structural features (already causally shifted in their own module).
+    # Pass both df_primary (default base) and df_1m (for HTF-resample families
+    # that mark NEEDS_RAW_1M = True).
     if structural_spec is not None:
         from altus.features.structural import build_structural_features
-        struct = build_structural_features(df_1m, structural_spec)
+        struct = build_structural_features(df_primary, structural_spec, df_1m=df_1m)
         struct = struct.replace([np.inf, -np.inf], np.nan)
         if not struct.empty:
             X = pd.concat([X, struct], axis=1)

@@ -115,21 +115,44 @@ class StructuralSpec:
         return f"structural: {', '.join(sorted(self.enabled))}"
 
 
-def build_structural_features(df_1m: pd.DataFrame, spec: StructuralSpec | None = None) -> pd.DataFrame:
+def build_structural_features(
+    df_primary: pd.DataFrame,
+    spec: StructuralSpec | None = None,
+    df_1m: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Build the enabled structural feature families and return a single DataFrame.
 
-    Returns an EMPTY DataFrame (indexed on df_1m.index) when no families are
+    Parameters
+    ----------
+    df_primary : the primary candle base (rolling-3m by default, or raw 1m when
+                 PRIMARY_WINDOW_MIN=1). Indexed at 1m timestamps. Most families
+                 compute on this — they get the noise-reduced view.
+    df_1m      : raw 1m bars. Required for families that mark NEEDS_RAW_1M = True
+                 (those that internally call _resample_ohlcv to build HTF aggregates;
+                 resampling rolling-window bars would over-count volume + leak).
+                 Defaults to df_primary when not passed, for backwards-compatibility
+                 with callers that haven't been updated yet.
+
+    Returns an EMPTY DataFrame (indexed on df_primary.index) when no families are
     enabled, which lets pipeline.build_features keep the existing price-only path.
     """
     spec = spec or StructuralSpec()
     if not spec.enabled:
-        return pd.DataFrame(index=df_1m.index)
+        return pd.DataFrame(index=df_primary.index)
+
+    # Back-compat: if caller doesn't pass df_1m, assume df_primary IS df_1m
+    # (i.e., they're running with PRIMARY_WINDOW_MIN=1 or pre-refactor code).
+    raw_1m = df_1m if df_1m is not None else df_primary
 
     blocks: list[pd.DataFrame] = []
     for name, module in _FAMILY_REGISTRY.items():
         if name not in spec.enabled:
             continue
-        blocks.append(module.compute(df_1m))
+        if getattr(module, "NEEDS_RAW_1M", False):
+            # HTF-resample families need clean non-overlapping 1m bars to aggregate.
+            blocks.append(module.compute(df_primary, df_1m=raw_1m))
+        else:
+            blocks.append(module.compute(df_primary))
 
     X = pd.concat(blocks, axis=1)
 

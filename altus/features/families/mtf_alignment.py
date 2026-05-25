@@ -43,7 +43,12 @@ def _project_to_1m(htf_sign: pd.Series, df_1m: pd.DataFrame, tf_min: int) -> pd.
     return shifted.reindex(union_idx).ffill().reindex(df_1m.index).fillna(0.0)
 
 
-def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
+NEEDS_RAW_1M = True  # uses _resample_ohlcv → must see clean non-overlapping 1m bars
+
+
+def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.DataFrame:
+    if df_1m is None:
+        df_1m = df_primary  # back-compat / PRIMARY_WINDOW_MIN=1 path
     out: dict[str, pd.Series] = {}
     tfs = [(5, "5m"), (15, "15m"), (60, "60m"), (240, "240m")]
     for tf_min, label in tfs:

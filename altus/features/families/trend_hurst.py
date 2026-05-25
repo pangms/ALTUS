@@ -146,13 +146,19 @@ def _trend_features_one_tf(df_1m: pd.DataFrame, tf_min: int, ema_n: int = 50, hu
     return shifted.reindex(union_idx).ffill().reindex(df_1m.index)
 
 
-def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
-    """Compute multi-TF trend features aligned to df_1m.index.
+NEEDS_RAW_1M = True  # uses _resample_ohlcv → must see clean non-overlapping 1m bars
 
+
+def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Compute multi-TF trend features aligned to the primary's index.
+
+    Uses raw 1m for HTF resampling (rolling-primary bars would mis-aggregate).
     Returns 8 columns:
       trend_4h_slope, trend_4h_hurst, trend_1d_slope, trend_1d_hurst,
       trend_1w_slope, trend_1w_hurst, trend_alignment, trend_strength
     """
+    if df_1m is None:
+        df_1m = df_primary  # back-compat / PRIMARY_WINDOW_MIN=1 path
     tfs = {"4h": 240, "1d": 1440, "1w": 10_080}
     blocks = []
     label_to_cols = {}

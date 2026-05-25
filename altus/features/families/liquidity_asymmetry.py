@@ -25,8 +25,13 @@ import pandas as pd
 from altus.features.families.liquidity_zones import compute as compute_liquidity_zones
 
 
-def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
-    lz = compute_liquidity_zones(df_1m)
+NEEDS_RAW_1M = True  # delegates to liquidity_zones which needs raw 1m
+
+
+def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.DataFrame:
+    if df_1m is None:
+        df_1m = df_primary  # back-compat / PRIMARY_WINDOW_MIN=1 path
+    lz = compute_liquidity_zones(df_primary, df_1m=df_1m)
 
     # lz exposes per-TF dist above/below in ATR + closest_zone. We use the
     # min-distance asymmetry across timeframes as a proxy for "geometric pull".

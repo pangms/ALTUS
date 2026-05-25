@@ -51,7 +51,8 @@ def main():
         torch.backends.cudnn.enabled = False
         print("cuDNN: DISABLED (workaround for RunPod version mismatch)")
 
-    from altus.data import load_mnq
+    from altus.config import PRIMARY_WINDOW_MIN
+    from altus.data import build_rolling_ohlcv, load_mnq
     from altus.models.simmtm import SimMTMEncoder
 
     enc_path = Path(args.encoder)
@@ -83,8 +84,25 @@ def main():
     print(f"      Encoder loaded (epoch {ckpt['epoch']}, loss {ckpt['loss']:.4f})")
 
     print(f"\n[2/4] Loading MNQ {args.data_start} -> {args.data_end}")
-    df = load_mnq(start=args.data_start, end=args.data_end)
-    print(f"      Loaded {len(df):,} bars")
+    df_raw = load_mnq(start=args.data_start, end=args.data_end)
+    print(f"      Loaded {len(df_raw):,} 1m bars")
+
+    # The encoder was trained on rolling-primary bars (pretrain_simmtm uses
+    # the same transform). Match that here so embeddings are produced on
+    # the same candle representation. The OUTPUT index stays at 1m so each
+    # row of the cache aligns with df_raw's 1m bars — downstream pipeline
+    # consumers expect 1m alignment.
+    if PRIMARY_WINDOW_MIN > 1:
+        df = build_rolling_ohlcv(df_raw, PRIMARY_WINDOW_MIN).dropna(how="any")
+        # The leading PRIMARY_WINDOW_MIN-1 rows are dropped (rolling warmup).
+        # The simmtm feature family already handles missing-row alignment via
+        # reindex+fillna(0.0), so the cache being short on the leading edge
+        # is safe — those bars get neutral 0 embeddings and the L1 pipeline's
+        # outer dropna() trims them anyway.
+        print(f"      Aggregated to rolling-{PRIMARY_WINDOW_MIN}m primary bars "
+              f"({len(df):,} rows after warmup trim)")
+    else:
+        df = df_raw
 
     print(f"\n[3/4] Running encoder on every {args.decimation}th bar (seq_len={seq_len})")
     x_arr = df[list(feature_cols)].to_numpy(dtype=np.float32)

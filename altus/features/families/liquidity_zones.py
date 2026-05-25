@@ -136,17 +136,30 @@ def _untouched_zones_at_each_1m_bar(
         above = [p for p in untouched_highs if p > cur_close]
         below = [p for p in untouched_lows if p < cur_close]
         if above:
+            # Nearest above = smallest price strictly greater than cur_close.
             dist_above_arr[i] = min(above) - cur_close
         if below:
-            dist_below_arr[i] = cur_close - min(below, key=lambda p: cur_close - p)
+            # Nearest below = largest price strictly less than cur_close.
+            # Earlier versions used `min(below, key=lambda p: cur_close - p)`
+            # which returns the FARTHEST below — caught in 2026-05-24 audit.
+            dist_below_arr[i] = cur_close - max(below)
 
     above_s = pd.Series(dist_above_arr, index=df_1m.index)
     below_s = pd.Series(dist_below_arr, index=df_1m.index)
     return above_s, below_s
 
 
-def compute(df_1m: pd.DataFrame) -> pd.DataFrame:
-    """Compute liquidity-zone features. Returns 7 columns."""
+NEEDS_RAW_1M = True  # uses _resample_ohlcv → must see clean non-overlapping 1m bars
+
+
+def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Compute liquidity-zone features. Returns 7 columns.
+
+    Uses raw 1m bars throughout — rolling-primary bars would produce wrong
+    high/low extremes for the HTF zone-detection logic.
+    """
+    if df_1m is None:
+        df_1m = df_primary  # back-compat / PRIMARY_WINDOW_MIN=1 path
     atr = _atr(df_1m, n=14).replace(0, np.nan)
     atr_safe = atr.ffill().fillna(1.0)
 
