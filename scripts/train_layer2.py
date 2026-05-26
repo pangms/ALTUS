@@ -280,6 +280,94 @@ def main():
           f"days_trip_trail_dd={l3_res.n_days_would_trip_trailing_dd}  "
           f"max_consec_losses={l3_res.max_consecutive_losses}")
 
+    # ---- Setup-aware L3 cascade (with L2 router + per-setup execution) -----
+    # Apply the predictive-framework router on top of the L2 cascade. Reads
+    # setup features from the structural feature matrix at each candidate bar,
+    # arbitrates the primary setup, applies modulators, and uses setup-
+    # conditional stops/targets/holds in the sim.
+    setup_feature_cols = [c for c in feats.columns if any(
+        c.startswith(p + "_") for p in ("sfs", "sfa", "sld", "orb", "svwap", "spb", "scomp", "seod")
+    )]
+    if setup_feature_cols:
+        print("\n" + "=" * 72)
+        print(" L3.1 production sim — SETUP-AWARE cascade (val slice)")
+        print(" Uses L2 router + per-setup execution params per SETUPS.md")
+        print("=" * 72)
+
+        from altus.training.l2_router import SetupCandidate, route_one_bar, BASELINE_WR
+        from altus.training.production_sim import compute_setup_aware_barriers
+
+        # Extract setup features for each val bar
+        feats_at_val = feats.reindex(labels_val.index[eval_mask])
+
+        def _setup_candidates_for_bar(row) -> list[SetupCandidate]:
+            cands = []
+            for setup_id in ("sfs", "sfa", "sld", "orb", "svwap", "spb", "scomp", "seod"):
+                active_col = f"{setup_id}_active"
+                strength_col = f"{setup_id}_strength"
+                dir_col = f"{setup_id}_direction"
+                if active_col in row.index and float(row[active_col]) >= 0.5:
+                    cands.append(SetupCandidate(
+                        setup_id=setup_id,
+                        active=float(row[active_col]),
+                        strength=float(row.get(strength_col, 0.5)),
+                        direction=int(round(float(row.get(dir_col, 0)))),
+                    ))
+            return cands
+
+        # Per-bar setup_id (primary winner from arbitrator) — None when no setup
+        n_eval = int(eval_mask.sum())
+        setup_ids_per_bar = [None] * n_eval
+        for i in range(n_eval):
+            row = feats_at_val.iloc[i] if i < len(feats_at_val) else None
+            if row is None or row.isna().all():
+                continue
+            cands = _setup_candidates_for_bar(row)
+            if not cands:
+                continue
+            # Use the router's arbitration alone (no MLP base WR — we use
+            # L2's already-calibrated prob as the WR estimate for the bar
+            # if it's a candidate, else BASELINE_WR for the primary setup).
+            from altus.training.l2_router import arbitrate_setups
+            setup_id, _ = arbitrate_setups(cands)
+            if setup_id is not None:
+                setup_ids_per_bar[i] = setup_id
+
+        # Compute setup-aware barriers
+        atr_at_val = np.maximum(
+            ((feats_at_val.get("vol_realized_30m") or pd.Series(np.ones(n_eval))).to_numpy(dtype=np.float32)
+             if "vol_realized_30m" in feats_at_val.columns else
+             np.ones(n_eval, dtype=np.float32)) * 30.0,  # rough conversion
+            1.0,
+        )
+        # Better: use ATR from labels' tp_points (which IS atr*k for vol-scaled)
+        atr_at_val = labels_val.tp_points[eval_mask] / 1.5  # k=1.5
+
+        cfg = L3Config()
+        tp_eff, sl_eff, _ = compute_setup_aware_barriers(
+            setup_ids_per_bar, atr_at_val,
+            cfg=cfg,
+            default_tp=labels_val.tp_points[eval_mask],
+            default_sl=labels_val.sl_points[eval_mask],
+        )
+
+        truths_setup_aware = dict(truths_eval)
+        truths_setup_aware["tp_points"] = tp_eff
+        truths_setup_aware["sl_points"] = sl_eff
+
+        l3_setup = simulate_l3(
+            labels_val.index[eval_mask].values,
+            {"long_tp_prob": long_prob_l2[eval_mask],
+             "short_tp_prob": short_prob_l2[eval_mask]},
+            truths_setup_aware,
+            cfg=cfg,
+        )
+        print(f"  {l3_setup.summary_line()}")
+        n_setup_trades = sum(1 for s in setup_ids_per_bar if s is not None)
+        print(f"  bars with active setup: {n_setup_trades:,} / {n_eval:,}")
+    else:
+        print("  (skipping setup-aware cascade — no setup features in feature matrix)")
+
     # ---- Save trained Layer 2 + outputs -----------------------------------
     out_dir = ARTIFACT_DIR / f"layer2_{int(time.time())}"
     out_dir.mkdir(parents=True, exist_ok=True)

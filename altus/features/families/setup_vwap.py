@@ -79,8 +79,9 @@ def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.D
 
     # Regime detection from VWAP slope (in ATR units of recent vol).
     slope_atr = slope / np.maximum(atr_arr * 15.0, EPS)  # normalize over 15-bar window
-    bull_regime = slope_atr > 0.05
-    bear_regime = slope_atr < -0.05
+    # Looser thresholds — 0.02 is "any directional VWAP drift" (was 0.05)
+    bull_regime = slope_atr > 0.02
+    bear_regime = slope_atr < -0.02
 
     # Count recent VWAP touches that held (within last 60 bars in same session)
     # A "hold" = a bar where price came within 0.15 ATR of VWAP and then moved
@@ -112,9 +113,10 @@ def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.D
         cutoff = i - 60
         holds_count[i] = sum(1 for h in sess_to_holds[sid[i]] if h >= cutoff)
 
-    # Active condition: in trending session, near VWAP, with prior holds AND slope-aligned
-    active = (past_first_hour & near_vwap & (bull_regime | bear_regime) &
-              (holds_count >= 1)).astype(np.int32)
+    # Active condition: in trending session, near VWAP, slope-aligned.
+    # The `holds_count` is used in STRENGTH not GATE — prior holds boost
+    # conviction but aren't required (was a 0% gate).
+    active = (past_first_hour & near_vwap & (bull_regime | bear_regime)).astype(np.int32)
     direction = np.where(active.astype(bool), np.where(bull_regime, 1, np.where(bear_regime, -1, 0)), 0).astype(np.int32)
 
     # Strength

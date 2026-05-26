@@ -30,8 +30,11 @@ BASE="vol,trend,anomaly"
 # Phase E PRUNED (post-audit 2026-05-25 per Agent C feature MI analysis):
 #   Kept (high MI):   round, mtf, vreg, sanat, creg, surprise, pvd
 #   Dropped (~0 MI):  absorp, extension, lasym, rhythm, facc
-#   Originally:       round,mtf,absorp,pvd,extension,vreg,sanat,creg,lasym,rhythm,facc,surprise
 PHASE_E="round,mtf,pvd,vreg,sanat,creg,surprise"
+# Tier-2 anchors (post-pivot horizontal references):
+ANCHORS="pda,vwap,tstruct"
+# Predictive setup library — 8 setups per FRAMEWORK.md A-tier:
+SETUPS="sfs,sfa,sld,orb,svwap,spb,scomp,seod"
 
 ARTIFACTS_DIR="/workspace/ALTUS/artifacts"
 SUMMARY_FILE="$ARTIFACTS_DIR/sweep_baseline_summary_$(date +%Y%m%d_%H%M%S).txt"
@@ -58,18 +61,18 @@ fi
 # combined fix package work, and does each remaining big component (Phase E,
 # BOCPD, SimMTM) earn its place on top of the new baseline?
 LABELS=(
-    "01_baseline"     # rolled-up baseline — vol+trend+anomaly under the new architecture
-    "02_phaseE"       # +Phase E (pruned trader-frame families)
-    "03_phaseF"       # +BOCPD regime (Phase F)
-    "04_full_eFsim"   # full integrated stack — Phase E + F + SimMTM
-    "05_full_plus_anchors"  # 04 + Tier-2 structural anchors (PDA + VWAP + trend_structure)
+    "01_baseline"           # vol+trend+anomaly — Tier-0 reference
+    "02_descriptive_full"   # +Phase E + BOCPD + anchors (descriptive layer complete)
+    "03_setups_only"        # baseline + 8 setups (predictive A-tier alone)
+    "04_predictive_full"    # full predictive: anchors + setups (Tier A all stages)
+    "05_with_simmtm"        # 04 + SimMTM (cache must exist) — pattern similarity
 )
 FAMILIES_LIST=(
     "$BASE"
-    "$BASE,$PHASE_E"
-    "$BASE,bocpd"
-    "$BASE,$PHASE_E,bocpd,simmtm"
-    "$BASE,$PHASE_E,bocpd,simmtm,pda,vwap,tstruct"
+    "$BASE,$PHASE_E,bocpd,$ANCHORS"
+    "$BASE,bocpd,$SETUPS"
+    "$BASE,$PHASE_E,bocpd,$ANCHORS,$SETUPS"
+    "$BASE,$PHASE_E,bocpd,$ANCHORS,$SETUPS,simmtm"
 )
 
 echo " Specs scheduled: ${#LABELS[@]} runs" | tee -a "$SUMMARY_FILE"

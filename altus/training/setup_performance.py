@@ -124,6 +124,37 @@ class SetupPerformanceTracker:
         for t in trades:
             self.record_trade(t.setup_id, t.regime_id, t.r_multiple, t.timestamp)
 
+    def bootstrap_from_predictions(
+        self,
+        setup_ids_per_bar,            # list[str | None] same len as timestamps
+        regime_ids_per_bar,           # array of int regime buckets
+        realized_r_per_bar,           # array of realized R-multiples per bar
+        timestamps,                    # array of datetime64
+    ) -> int:
+        """Bootstrap the tracker from a training/val run's outcomes.
+
+        For each bar with an active setup_id, records the trade outcome
+        (realized R) into the per-(setup × regime) cell. Returns the number
+        of trades bootstrapped.
+
+        This is the standard cold-start flow: run training, extract setup
+        outcomes from val_preds + labels, bootstrap the tracker, then save
+        the persisted JSON for L2 to load at the next training cycle.
+        """
+        count = 0
+        for i, sid in enumerate(setup_ids_per_bar):
+            if sid is None or sid == "":
+                continue
+            ts = str(timestamps[i]) if i < len(timestamps) else ""
+            self.record_trade(
+                sid,
+                int(regime_ids_per_bar[i]) if i < len(regime_ids_per_bar) else 0,
+                float(realized_r_per_bar[i]) if i < len(realized_r_per_bar) else 0.0,
+                ts,
+            )
+            count += 1
+        return count
+
     # ---------- Stats ----------
     def summary(self) -> dict:
         """Per-cell summary stats for reporting."""

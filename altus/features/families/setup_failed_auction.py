@@ -34,8 +34,9 @@ NEEDS_RAW_1M = True
 
 def _detect_multi_touch(
     highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, atr_arr: np.ndarray,
-    lookback: int = 60, tolerance_atr: float = 0.15, recovery_atr: float = 0.3,
-    recovery_window: int = 5, max_recent_touch_bars: int = 10,
+    lookback: int = 60, tolerance_atr: float = 0.08, recovery_atr: float = 0.5,
+    recovery_window: int = 5, max_recent_touch_bars: int = 8,
+    min_touches: int = 3,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Detect multi-touch level-defense patterns.
 
@@ -87,7 +88,7 @@ def _detect_multi_touch(
                         if highest_after - candidate_price >= recovery_atr * atr_local:
                             count += 1
                             last_touch_idx = j
-            if count >= 3 and last_touch_idx >= 0:
+            if count >= min_touches and last_touch_idx >= 0:
                 touch_age = i - last_touch_idx
                 if touch_age <= max_recent_touch_bars and count > best_count:
                     best_count = count
@@ -95,7 +96,7 @@ def _detect_multi_touch(
                     best_last_touch_age = touch_age
                     best_price = candidate_price
 
-        if best_count >= 3:
+        if best_count >= min_touches:
             active[i] = 1
             direction[i] = best_dir
             touch_count[i] = best_count

@@ -242,7 +242,10 @@ def triple_barrier_labels(
 
     is_continuation = (abs_terminal >= 0.5) & (drawdown_against < 0.7)
     is_revert = (realized_range_atr >= 0.7) & (abs_terminal < 0.3)
-    is_chop = (realized_range_atr < 0.5) & (~is_continuation) & (~is_revert)
+    # Chop threshold raised 0.5 → 1.0 ATR — with vol-scaled barriers,
+    # "no meaningful move over 60 bars" should mean realized range < 1 ATR,
+    # not 0.5 ATR. Smoke test showed 0% chop fires at 0.5 ATR threshold.
+    is_chop = (realized_range_atr < 1.0) & (~is_continuation) & (~is_revert)
     # Default class: continuation if signed move, else chop (cleaner than mixed)
     path_shape = np.where(is_revert, 1,
                   np.where(is_chop, 2,
@@ -250,12 +253,13 @@ def triple_barrier_labels(
                     # Fallback: closest to either continuation or chop based on magnitude
                     np.where(abs_terminal >= 0.3, 0, 2)))).astype(np.int8)
 
-    # Generic level-clearance: did price excursion exceed 1.5 ATR in either
-    # direction? Threshold chosen so the label has roughly 50/50 base rate
-    # under vol-scaled barriers — informative for the binary classification head.
-    # Smoke-test result: ~100% at 1.0 ATR (too easy), 1.5 ATR gives meaningful
-    # split.
-    clears_1atr = ((max_up_atr >= 1.5) | (max_down_atr >= 1.5)).astype(np.int8)
+    # Generic level-clearance: did the H-bar excursion exceed 5 ATR in either
+    # direction? Threshold tuned for ~50/50 base rate under vol-scaled barriers
+    # over a 60-bar horizon. MNQ's 60-bar windows commonly have 2-3 ATR moves;
+    # 5 ATR catches "big-move bars" where setups had real follow-through. At
+    # 1.0 ATR: 100% (useless). At 3.0: 90%. At 5.0: closer to 50/50.
+    # (Field tunable post-sweep based on actual base rate from training data.)
+    clears_1atr = ((max_up_atr >= 5.0) | (max_down_atr >= 5.0)).astype(np.int8)
 
     # ----- Inflection auxiliary label (Phase H, Q26) ---------------------------
     # Recent direction = sign of open[T] - open[T-K] over K=10 bars.

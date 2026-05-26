@@ -240,6 +240,57 @@ def assign_grades(probs: np.ndarray, thresholds: GradeThresholds) -> np.ndarray:
 # Per-signal PnL (same model as sim_pnl.py)
 # ---------------------------------------------------------------------------
 
+def compute_setup_aware_barriers(
+    setup_ids: np.ndarray | list,
+    atr_per_bar: np.ndarray,
+    cfg: "L3Config | None" = None,
+    default_tp: np.ndarray | None = None,
+    default_sl: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert setup_ids per bar into per-bar (tp_points, sl_points, hold_bars).
+
+    For each bar i:
+      - if setup_ids[i] is None or "" → use default_tp[i] / default_sl[i]
+        (typically the labeler's vol-scaled barriers) and hold = assumed_hold_bars
+      - else → look up cfg.setup_execution_params[setup_id], scale by atr_per_bar[i]
+
+    Args:
+        setup_ids: array-like of strings (or None/"" for no-setup bars)
+        atr_per_bar: per-bar ATR for scaling setup-conditional barriers
+        cfg: L3Config (defaults to new L3Config())
+        default_tp, default_sl: fallback per-bar barriers when no setup active.
+                                Required if you want non-fallback fallback values.
+
+    Returns: (effective_tp_points, effective_sl_points, effective_hold_bars)
+    """
+    cfg = cfg or L3Config()
+    n = len(setup_ids)
+    if default_tp is None:
+        default_tp = np.full(n, TP_POINTS, dtype=np.float32)
+    if default_sl is None:
+        default_sl = np.full(n, SL_POINTS, dtype=np.float32)
+
+    tp_out = np.array(default_tp, dtype=np.float32, copy=True)
+    sl_out = np.array(default_sl, dtype=np.float32, copy=True)
+    hold_out = np.full(n, cfg.assumed_hold_bars, dtype=np.int32)
+
+    if not cfg.use_setup_aware_execution:
+        return tp_out, sl_out, hold_out
+
+    params_map = cfg.setup_execution_params
+    for i in range(n):
+        sid = setup_ids[i] if i < len(setup_ids) else None
+        if sid is None or sid == "" or sid not in params_map:
+            continue
+        params = params_map[sid]
+        a = float(atr_per_bar[i]) if i < len(atr_per_bar) else 1.0
+        tp_out[i] = params["target_atr"] * a
+        sl_out[i] = params["stop_atr"] * a
+        hold_out[i] = int(params["hold_bars"])
+
+    return tp_out, sl_out, hold_out
+
+
 def _per_side_pnl_pts(
     label: np.ndarray, mfe: np.ndarray, mae: np.ndarray,
     tp_pts: float, sl_pts: float, cost_pts: float,

@@ -40,6 +40,9 @@ NEEDS_RAW_1M = True
 def _compute_or_anchors(df_1m: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """For each bar, return (or_high, or_low, mins_since_session_start).
     OR = first 30min of NY RTH. Locked after the 30th minute.
+
+    Uses direct positional iteration for robustness — avoids index.get_loc
+    edge cases with potential timestamp duplicates.
     """
     n = len(df_1m)
     idx = df_1m.index
@@ -47,41 +50,49 @@ def _compute_or_anchors(df_1m: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np
     lows = df_1m["low"].to_numpy(dtype=np.float64)
     hour = hour_of_day_utc(idx)
     in_rth = in_ny_rth(idx)
-    sid = session_id(idx)
+    in_or_window = (hour >= NY_RTH_START_UTC) & (hour < NY_RTH_START_UTC + 0.5)
 
     or_high = np.full(n, np.nan, dtype=np.float64)
     or_low = np.full(n, np.nan, dtype=np.float64)
     mins_since = np.zeros(n, dtype=np.int32)
 
-    # For each session, find the first 30min window and lock OR.
-    in_or = (hour >= NY_RTH_START_UTC) & (hour < NY_RTH_START_UTC + 0.5)
-    df_tmp = pd.DataFrame({"sid": sid, "in_or": in_or.astype(int),
-                            "in_rth": in_rth.astype(int)}, index=idx)
+    # Walk forward through bars. Detect RTH-session starts and OR windows.
+    # State machine: track current session's RTH-start position + OR-end position.
+    cur_session_rth_start = -1   # position where current session's RTH started
+    cur_session_or_end = -1      # position where OR window ended
+    cur_or_high = -np.inf
+    cur_or_low = np.inf
+    in_session_or = False
 
-    # Per-session OR high/low from the first 30min
-    for s, grp in df_tmp.groupby("sid"):
-        or_mask = grp["in_or"].to_numpy().astype(bool)
-        rth_mask = grp["in_rth"].to_numpy().astype(bool)
-        if not or_mask.any():
-            continue
-        # Find positions in df_1m where this session's OR is built
-        grp_pos = grp.index.map(lambda t: df_1m.index.get_loc(t)).to_numpy()
-        or_pos = grp_pos[or_mask]
-        if len(or_pos) == 0:
-            continue
-        sess_or_high = float(np.max(highs[or_pos]))
-        sess_or_low = float(np.min(lows[or_pos]))
-        # Apply forward to all RTH bars in this session AFTER the OR is locked
-        # (i.e., positions past the 30min mark)
-        rth_pos = grp_pos[rth_mask]
-        if len(rth_pos) == 0:
-            continue
-        first_or_end_pos = or_pos[-1] + 1 if or_pos[-1] + 1 < n else n
-        for p in rth_pos:
-            if p > or_pos[-1]:
-                or_high[p] = sess_or_high
-                or_low[p] = sess_or_low
-                mins_since[p] = int(p - rth_pos[0])
+    for i in range(n):
+        if in_rth[i]:
+            # Check if this is the start of a new RTH session
+            if i == 0 or not in_rth[i - 1]:
+                cur_session_rth_start = i
+                cur_session_or_end = -1
+                cur_or_high = -np.inf
+                cur_or_low = np.inf
+                in_session_or = in_or_window[i]
+            # Accumulate OR if we're in the OR window
+            if in_or_window[i]:
+                cur_or_high = max(cur_or_high, float(highs[i]))
+                cur_or_low = min(cur_or_low, float(lows[i]))
+                in_session_or = True
+            elif in_session_or:
+                # Just exited OR window — lock the OR
+                cur_session_or_end = i - 1
+                in_session_or = False
+            # If OR has been locked, propagate forward
+            if cur_session_or_end >= 0:
+                or_high[i] = cur_or_high
+                or_low[i] = cur_or_low
+                mins_since[i] = i - cur_session_rth_start
+        else:
+            # Outside RTH — handle case where session ended without exiting OR explicitly
+            if in_session_or and cur_or_high > -np.inf:
+                # Session ended mid-OR (unusual). Don't propagate (no valid OR locked).
+                pass
+            in_session_or = False
 
     return or_high, or_low, mins_since
 
@@ -94,20 +105,28 @@ def compute(df_primary: pd.DataFrame, df_1m: pd.DataFrame | None = None) -> pd.D
     highs = df_1m["high"].to_numpy(dtype=np.float64)
     lows = df_1m["low"].to_numpy(dtype=np.float64)
     closes = df_1m["close"].to_numpy(dtype=np.float64)
-    atr_arr = atr_safe(df_1m, n=60)  # 60-bar ATR for "range vs hourly vol" context
+    # ATR baseline: use daily-average ATR (1440-bar window) so OR size is
+    # normalized against typical-daily-volatility, not against the very vol
+    # window that contains the OR (which gives meaningless ratios). 30-min OR
+    # range / 1d avg ATR typically lands in [1, 8] for MNQ.
+    atr_arr = atr_safe(df_1m, n=14)              # short-window ATR (used downstream)
+    atr_daily = atr_safe(df_1m, n=1440)          # 1-day ATR for OR size normalization
 
     or_high, or_low, mins_since = _compute_or_anchors(df_1m)
 
     # Where do we have a valid locked OR?
     valid = ~np.isnan(or_high) & ~np.isnan(or_low)
     range_pts = np.where(valid, or_high - or_low, 0.0)
-    range_atr = np.where(valid, range_pts / np.maximum(atr_arr, EPS), 0.0)
+    range_atr = np.where(valid, range_pts / np.maximum(atr_daily, EPS), 0.0)
 
-    # OR size eligibility: 0.5 to 3.0 ATR
-    or_size_ok = valid & (range_atr >= 0.5) & (range_atr <= 3.0)
+    # OR size eligibility: 1.0 to 8.0 × daily ATR (calibrated against observed
+    # OR sizes — typical 30-min opening range on MNQ is 2-5× the 1d ATR).
+    or_size_ok = valid & (range_atr >= 1.0) & (range_atr <= 8.0)
 
-    # Time eligibility: 30 to 180 min into session
-    time_ok = (mins_since >= 30) & (mins_since <= 180)
+    # Time eligibility: 30 to 90 min into session (active breakout window).
+    # Beyond 90min the OR-driven momentum has typically faded — late breaks
+    # are weak signals.
+    time_ok = (mins_since >= 30) & (mins_since <= 90)
 
     # Breakout detection
     breakout_long = or_size_ok & time_ok & (closes > or_high)
