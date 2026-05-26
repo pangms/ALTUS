@@ -143,6 +143,10 @@ def main():
         inflection_label=labels.inflection_label[val_positions],
         tp_points=labels.tp_points[val_positions],
         sl_points=labels.sl_points[val_positions],
+        return_H15=labels.return_H15[val_positions],
+        return_H60=labels.return_H60[val_positions],
+        path_shape_class=labels.path_shape_class[val_positions],
+        clears_1atr=labels.clears_1atr[val_positions],
     )
 
     # ---- Select Layer 1 candidates ----------------------------------------

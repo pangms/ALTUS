@@ -178,6 +178,12 @@ class ModelConfig:
     # crowding the primary objective.
     use_inflection: bool = True
 
+    # Predictive framework heads (2026-05-25 — FRAMEWORK.md C-tier).
+    # When True, adds: path_shape softmax (3-class), return regression at
+    # H+15 + terminal, level-clearance logit. These inject forward-looking
+    # gradient signal that the descriptive direction softmax alone cannot.
+    use_predictive_heads: bool = True
+
     # RevIN — ENABLED by default post-audit (was False, big OOS-shift cost).
     # Per-instance z-score + learnable affine. The val→OOS AUC gap of ~0.14
     # observed in the pre-audit sweep suggested RevIN should have been on.
@@ -250,15 +256,21 @@ class TrainConfig:
     label_smoothing: float = 0.10  # softens CE targets — was 0.05
     input_feature_dropout: float = 0.10  # was 0.05 — kill more feature noise
     # Multi-task loss weights:
-    #   cls = 3-class direction cross-entropy (primary objective)
-    #   reg = MFE/MAE Huber on direction-conditional excursions — small weight
-    #         (0.05) injects forward-looking gradient without dominating CE.
-    #         Was 0.2 pre-pivot (caused independent-BCE collapse, not MFE/MAE).
-    #   inflection = aux BCE head for Q26 — small weight (0.05) regularizes
-    #         the shared encoder with reversal-vs-continuation signal.
+    #   cls         = 3-class direction CE (primary objective)
+    #   reg         = MFE/MAE Huber excursions (Q5)
+    #   inflection  = aux BCE head for Q26 (reversal-vs-continuation)
+    #   path_shape  = 3-class CE for path geometry (C3, B4)
+    #   returns     = MSE for forward-return regression at H+15 + H+60 (C1, C2)
+    #   clears_lvl  = BCE for ≥1 ATR excursion within H (C4 proxy)
+    # The aux loss weights (everything but cls) are kept small individually so
+    # direction CE remains the primary gradient signal while every head still
+    # gets useful learning signal.
     cls_loss_weight: float = 1.0
     reg_loss_weight: float = 0.05
     inflection_loss_weight: float = 0.05
+    path_shape_loss_weight: float = 0.05
+    returns_loss_weight: float = 0.10
+    clears_level_loss_weight: float = 0.05
     early_stop_patience: int = 4
     val_metric: str = "mean_auc"     # what early stopping watches
     num_workers: int = 0              # MPS works best single-process

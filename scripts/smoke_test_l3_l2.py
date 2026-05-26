@@ -155,6 +155,10 @@ def main():
             np.zeros(len(val_positions), dtype=np.int8),
         tp_points=labels.tp_points[val_positions],
         sl_points=labels.sl_points[val_positions],
+        return_H15=labels.return_H15[val_positions],
+        return_H60=labels.return_H60[val_positions],
+        path_shape_class=labels.path_shape_class[val_positions],
+        clears_1atr=labels.clears_1atr[val_positions],
     )
 
     # ---- Build L1-only "truths" dict for simulate_l3 (uses REAL labels) ----

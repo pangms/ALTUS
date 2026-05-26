@@ -95,8 +95,13 @@ class ALTUSDataset(Dataset):
             "mfe_short": torch.tensor(self._labels.mfe_short[pos], dtype=torch.float32),
             "mae_short": torch.tensor(self._labels.mae_short[pos], dtype=torch.float32),
             # Phase H: inflection auxiliary target (Q26) — emitted always;
-            # the loss ignores it when inflection_loss_weight=0 (new default).
+            # the loss ignores it when inflection_loss_weight=0.
             "inflection": torch.tensor(self._labels.inflection_label[pos], dtype=torch.float32),
+            # Predictive framework labels (2026-05-25 — FRAMEWORK.md C-tier).
+            "return_H15": torch.tensor(self._labels.return_H15[pos], dtype=torch.float32),
+            "return_H60": torch.tensor(self._labels.return_H60[pos], dtype=torch.float32),
+            "path_shape_class": torch.tensor(self._labels.path_shape_class[pos], dtype=torch.long),
+            "clears_1atr": torch.tensor(self._labels.clears_1atr[pos], dtype=torch.float32),
         }
 
 
@@ -111,4 +116,8 @@ def collate(batch: list[dict]) -> dict[str, torch.Tensor]:
         "mfe_short": torch.stack([b["mfe_short"] for b in batch], dim=0),
         "mae_short": torch.stack([b["mae_short"] for b in batch], dim=0),
         "inflection": torch.stack([b["inflection"] for b in batch], dim=0),
+        "return_H15": torch.stack([b["return_H15"] for b in batch], dim=0),
+        "return_H60": torch.stack([b["return_H60"] for b in batch], dim=0),
+        "path_shape_class": torch.stack([b["path_shape_class"] for b in batch], dim=0),
+        "clears_1atr": torch.stack([b["clears_1atr"] for b in batch], dim=0),
     }

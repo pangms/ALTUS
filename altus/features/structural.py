@@ -34,6 +34,14 @@ from altus.features.families import (
     round_levels,
     session_anatomy,
     session_time,
+    setup_compression,
+    setup_eod,
+    setup_failed_auction,
+    setup_failed_sweep,
+    setup_level_defense,
+    setup_orb,
+    setup_pullback,
+    setup_vwap,
     simmtm,
     sweep_detection,
     tape_rhythm,
@@ -89,6 +97,16 @@ _FAMILY_REGISTRY = {
     "pda":       prior_day_anchors,    # Q11/Q12/Q14 — PDH/PDL/ONH/ONL/RTH-open + gap (9 feats)
     "vwap":      vwap_anchors,         # Q6/Q7/Q9 — session VWAP + ±1σ bands + slope (5 feats)
     "tstruct":   trend_structure,      # Q19 — HH/HL/LH/LL state machine + swing age/dist (6 feats)
+    # Predictive setup library (2026-05-25 — FRAMEWORK.md A-tier).
+    # The asymmetric setups the engine is built to detect. See SETUPS.md.
+    "sfs":       setup_failed_sweep,   # A3 — failed sweep / liquidity trap (5 feats)
+    "sfa":       setup_failed_auction, # A6 — multi-touch level rejection (5 feats)
+    "sld":       setup_level_defense,  # A8 — proven multi-touch level defense (5 feats)
+    "orb":       setup_orb,            # A1 — Open Range Breakout (5 feats)
+    "svwap":     setup_vwap,           # A2 — VWAP rejection/reclaim (5 feats)
+    "spb":       setup_pullback,       # A4 — trend pullback continuation (5 feats)
+    "scomp":     setup_compression,    # A5 — compression breakout (5 feats)
+    "seod":      setup_eod,            # A7 — EOD mean reversion (5 feats)
 }
 
 

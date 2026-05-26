@@ -45,9 +45,18 @@ class HybridOutputs:
     mae_long: torch.Tensor
     mfe_short: torch.Tensor
     mae_short: torch.Tensor
-    # Phase H: P(inflection) — auxiliary head. Disabled by default in the
-    # post-audit config (use_inflection=False); kept for A/B-able re-enable.
+    # Phase H: P(inflection) — auxiliary head. Re-enabled 2026-05-25 (Tier 1
+    # follow-up) — fills Q26 / F9. None when use_inflection=False.
     inflection_logit: torch.Tensor | None = None
+    # Predictive framework heads (2026-05-25 — FRAMEWORK.md C-tier).
+    # Path-shape softmax (B, 3): [continuation, revert, chop] — answers B4/C3.
+    # Forward-return regression (B,) for H+15 and terminal (H+60) — C1, C2.
+    # Level-clearance logit (B,) — binary "did price excursion >= 1 ATR?" — C4.
+    # None when their heads are disabled (use_predictive_heads=False).
+    path_shape_logits: torch.Tensor | None = None
+    return_H15: torch.Tensor | None = None
+    return_H60: torch.Tensor | None = None
+    clears_level_logit: torch.Tensor | None = None
     # Fusion embedding: the (B, fusion_hidden) vector right before the output
     # heads. Captures the model's compressed representation of the input
     # window. Optional — only populated if `return_embedding=True` is passed
@@ -89,6 +98,19 @@ class HybridOutputs:
             return None
         return torch.sigmoid(self.inflection_logit)
 
+    @property
+    def path_shape_probs(self) -> torch.Tensor | None:
+        """(B, 3) softmax over [continuation, revert, chop]."""
+        if self.path_shape_logits is None:
+            return None
+        return torch.softmax(self.path_shape_logits, dim=-1)
+
+    @property
+    def clears_level_prob(self) -> torch.Tensor | None:
+        if self.clears_level_logit is None:
+            return None
+        return torch.sigmoid(self.clears_level_logit)
+
     def as_dict(self) -> dict[str, torch.Tensor]:
         d = {
             "direction_logits": self.direction_logits,
@@ -101,6 +123,11 @@ class HybridOutputs:
         }
         if self.inflection_logit is not None:
             d["inflection_logit"] = self.inflection_logit
+        if self.path_shape_logits is not None:
+            d["path_shape_logits"] = self.path_shape_logits
+            d["return_H15"] = self.return_H15
+            d["return_H60"] = self.return_H60
+            d["clears_level_logit"] = self.clears_level_logit
         if self.fusion_embedding is not None:
             d["fusion_embedding"] = self.fusion_embedding
         return d
@@ -215,6 +242,37 @@ class HybridLayer1(nn.Module):
         else:
             self.head_inflection = None
 
+        # Predictive framework heads (2026-05-25 — FRAMEWORK.md C-tier).
+        # Each is a small 2-layer head on the fusion embedding. Disable via
+        # cfg.use_predictive_heads=False for A/B ablation.
+        if getattr(cfg, "use_predictive_heads", False):
+            # 3-class path shape: continuation / revert / chop
+            self.head_path_shape = nn.Sequential(
+                nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden // 2),
+                nn.GELU(),
+                nn.Dropout(cfg.fusion_dropout),
+                nn.Linear(cfg.fusion_hidden // 2, 3),
+            )
+            # Forward returns at two horizons — predict signed return in ATR units.
+            # Output dim 2: (return_H15, return_H60). No activation — linear regression.
+            self.head_returns = nn.Sequential(
+                nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden // 2),
+                nn.GELU(),
+                nn.Dropout(cfg.fusion_dropout),
+                nn.Linear(cfg.fusion_hidden // 2, 2),
+            )
+            # Binary: probability of >= 1 ATR excursion within H bars.
+            self.head_clears_level = nn.Sequential(
+                nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden // 2),
+                nn.GELU(),
+                nn.Dropout(cfg.fusion_dropout),
+                nn.Linear(cfg.fusion_hidden // 2, 1),
+            )
+        else:
+            self.head_path_shape = None
+            self.head_returns = None
+            self.head_clears_level = None
+
     def forward(self, x: torch.Tensor, return_embedding: bool = False) -> HybridOutputs:
         if self.revin is not None:
             x = self.revin(x, mode="norm")
@@ -244,6 +302,19 @@ class HybridLayer1(nn.Module):
             mfe_long = mae_long = mfe_short = mae_short = zero
         inflection_logit = self.head_inflection(z).squeeze(-1) if self.head_inflection is not None else None
 
+        # Predictive heads — None when disabled.
+        if self.head_path_shape is not None:
+            path_shape_logits = self.head_path_shape(z)           # (B, 3)
+            returns_2d = self.head_returns(z)                      # (B, 2)
+            return_H15 = returns_2d[:, 0]
+            return_H60 = returns_2d[:, 1]
+            clears_level_logit = self.head_clears_level(z).squeeze(-1)
+        else:
+            path_shape_logits = None
+            return_H15 = None
+            return_H60 = None
+            clears_level_logit = None
+
         return HybridOutputs(
             direction_logits=direction_logits,
             mfe_long=mfe_long,
@@ -251,6 +322,10 @@ class HybridLayer1(nn.Module):
             mfe_short=mfe_short,
             mae_short=mae_short,
             inflection_logit=inflection_logit,
+            path_shape_logits=path_shape_logits,
+            return_H15=return_H15,
+            return_H60=return_H60,
+            clears_level_logit=clears_level_logit,
             fusion_embedding=z if return_embedding else None,
         )
 

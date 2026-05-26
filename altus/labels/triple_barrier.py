@@ -89,6 +89,22 @@ class LabelOutput(NamedTuple):
     # for honest PnL when barriers vary.
     tp_points: np.ndarray         # float32, points
     sl_points: np.ndarray         # float32, points
+    # Predictive framework labels (2026-05-25 — FRAMEWORK.md C-tier).
+    # Signed forward returns at fixed horizons in ATR units. Causal: computed
+    # from bars strictly after T over the H-bar window. These force the encoder
+    # to project magnitude × direction, not just classify barrier outcomes.
+    return_H15: np.ndarray        # float32, signed return at T+15 in ATR units
+    return_H60: np.ndarray        # float32, signed return at T+horizon in ATR units
+    # 3-class path-shape label (continuation / revert / chop). Categorizes
+    # the realized H-bar window's character. Answers Q26/C3.
+    #   0 = continuation: |terminal return| > 0.5 ATR (clean directional move)
+    #   1 = revert:       realized range > 0.7 ATR AND |terminal return| < 0.3 ATR
+    #   2 = chop:         realized range < 0.5 ATR (no meaningful move)
+    path_shape_class: np.ndarray  # int8, {0, 1, 2}
+    # Binary: did price extend by ≥ 1 ATR in EITHER direction within H bars?
+    # Generic level-clearance proxy used by C4 head. The setup-aware
+    # interpretation happens at feature time (setups know WHICH level matters).
+    clears_1atr: np.ndarray       # int8, {0, 1}
 
 
 def triple_barrier_labels(
@@ -180,6 +196,67 @@ def triple_barrier_labels(
         high_win=high_win, low_win=low_win, entry=entry, stop_idx=short_stop, side="short"
     )
 
+    # ----- Predictive framework labels (2026-05-25 — FRAMEWORK.md C-tier) ------
+    # Per-bar ATR for normalizing forward returns. Same window used for
+    # vol-scaled barriers — reuse to keep things consistent.
+    if mode == "vol_scaled":
+        atr_per_bar = atr[:n_labels].astype(np.float32)
+    else:
+        atr_per_bar = _causal_atr_per_bar(df_1m, LABEL_VOL_SCALE_ATR_BARS)[:n_labels].astype(np.float32)
+    atr_safe = np.maximum(atr_per_bar, 1e-6)
+
+    # Forward returns at H+15 and at terminal (H+horizon).
+    closes = df_1m["close"].to_numpy(dtype=np.float32)
+    h15 = min(15, horizon)
+    close_at_T = closes[:n_labels]
+    close_at_T_plus_15 = closes[h15 : h15 + n_labels]
+    close_at_T_plus_H = closes[horizon : horizon + n_labels]
+    # Defensive guard against length mismatch on tail bars
+    n_h15 = min(len(close_at_T_plus_15), n_labels)
+    n_h = min(len(close_at_T_plus_H), n_labels)
+    return_H15 = np.zeros(n_labels, dtype=np.float32)
+    return_H60 = np.zeros(n_labels, dtype=np.float32)
+    return_H15[:n_h15] = (close_at_T_plus_15[:n_h15] - close_at_T[:n_h15]) / atr_safe[:n_h15]
+    return_H60[:n_h] = (close_at_T_plus_H[:n_h] - close_at_T[:n_h]) / atr_safe[:n_h]
+    # Clip to a sane range — prevents extreme outliers from dominating regression.
+    return_H15 = np.clip(return_H15, -10.0, 10.0)
+    return_H60 = np.clip(return_H60, -10.0, 10.0)
+
+    # Path-shape 3-class label: continuation / revert / chop.
+    # Computed from the realized H-bar window's geometry.
+    max_high_in_window = high_win.max(axis=1)
+    min_low_in_window = low_win.min(axis=1)
+    # Excursion magnitudes in ATR units relative to entry
+    max_up_atr = (max_high_in_window - entry) / atr_safe
+    max_down_atr = (entry - min_low_in_window) / atr_safe
+    realized_range_atr = max_up_atr + max_down_atr
+    # Terminal return magnitude (close at horizon, not barrier-resolution)
+    abs_terminal = np.abs(return_H60)
+
+    # Continuation: clean directional move — terminal magnitude >= 0.5 ATR
+    # AND the move-against-terminal-direction is bounded
+    sign_terminal = np.sign(return_H60)
+    # Drawdown against the terminal direction
+    drawdown_against = np.where(sign_terminal > 0, max_down_atr, max_up_atr)
+    drawdown_against = np.where(sign_terminal == 0, np.maximum(max_up_atr, max_down_atr), drawdown_against)
+
+    is_continuation = (abs_terminal >= 0.5) & (drawdown_against < 0.7)
+    is_revert = (realized_range_atr >= 0.7) & (abs_terminal < 0.3)
+    is_chop = (realized_range_atr < 0.5) & (~is_continuation) & (~is_revert)
+    # Default class: continuation if signed move, else chop (cleaner than mixed)
+    path_shape = np.where(is_revert, 1,
+                  np.where(is_chop, 2,
+                   np.where(is_continuation, 0,
+                    # Fallback: closest to either continuation or chop based on magnitude
+                    np.where(abs_terminal >= 0.3, 0, 2)))).astype(np.int8)
+
+    # Generic level-clearance: did price excursion exceed 1.5 ATR in either
+    # direction? Threshold chosen so the label has roughly 50/50 base rate
+    # under vol-scaled barriers — informative for the binary classification head.
+    # Smoke-test result: ~100% at 1.0 ATR (too easy), 1.5 ATR gives meaningful
+    # split.
+    clears_1atr = ((max_up_atr >= 1.5) | (max_down_atr >= 1.5)).astype(np.int8)
+
     # ----- Inflection auxiliary label (Phase H, Q26) ---------------------------
     # Recent direction = sign of open[T] - open[T-K] over K=10 bars.
     # Inflection = 1 if recent direction was UP but only short_tp triggered (or
@@ -221,6 +298,10 @@ def triple_barrier_labels(
         inflection_label=inflection_label[keep],
         tp_points=tp_pts_arr[keep],
         sl_points=sl_pts_arr[keep],
+        return_H15=return_H15[keep],
+        return_H60=return_H60[keep],
+        path_shape_class=path_shape[keep],
+        clears_1atr=clears_1atr[keep],
     )
 
 
@@ -246,6 +327,10 @@ def filter_labels_to_index(labels: LabelOutput, target_index: pd.DatetimeIndex) 
         inflection_label=labels.inflection_label[idx],
         tp_points=labels.tp_points[idx],
         sl_points=labels.sl_points[idx],
+        return_H15=labels.return_H15[idx],
+        return_H60=labels.return_H60[idx],
+        path_shape_class=labels.path_shape_class[idx],
+        clears_1atr=labels.clears_1atr[idx],
     )
 
 

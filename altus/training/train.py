@@ -26,6 +26,9 @@ def _select_device(preferred: str) -> torch.device:
 def _multi_task_loss(
     out, batch, cls_w: float, reg_w: float, reg_scale: float = 30.0, label_smoothing: float = 0.0,
     inflection_w: float = 0.0,
+    path_shape_w: float = 0.0,
+    returns_w: float = 0.0,
+    clears_level_w: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Cross-entropy on the 3-class direction head, optional Huber on regression
     heads, optional BCE on the inflection auxiliary head.
@@ -79,8 +82,31 @@ def _multi_task_loss(
         l_infl = bce(out.inflection_logit, infl_tgt)
         total = total + inflection_w * l_infl
         parts["bce_inflection"] = float(l_infl.detach())
-        parts["loss"] = float(total.detach())
 
+    # Predictive framework losses (2026-05-25 — FRAMEWORK.md C-tier).
+    # Each is gated on weight > 0 AND head output present.
+    if path_shape_w > 0 and out.path_shape_logits is not None and "path_shape_class" in batch:
+        ce_ps = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        l_ps = ce_ps(out.path_shape_logits, batch["path_shape_class"])
+        total = total + path_shape_w * l_ps
+        parts["ce_path_shape"] = float(l_ps.detach())
+
+    if returns_w > 0 and out.return_H15 is not None and "return_H15" in batch:
+        mse = nn.MSELoss()
+        l_r15 = mse(out.return_H15, batch["return_H15"])
+        l_r60 = mse(out.return_H60, batch["return_H60"])
+        total = total + returns_w * (l_r15 + l_r60)
+        parts["mse_return_H15"] = float(l_r15.detach())
+        parts["mse_return_H60"] = float(l_r60.detach())
+
+    if clears_level_w > 0 and out.clears_level_logit is not None and "clears_1atr" in batch:
+        bce_cl = nn.BCEWithLogitsLoss()
+        cl_tgt = batch["clears_1atr"] * (1 - 2 * label_smoothing) + label_smoothing
+        l_cl = bce_cl(out.clears_level_logit, cl_tgt)
+        total = total + clears_level_w * l_cl
+        parts["bce_clears_level"] = float(l_cl.detach())
+
+    parts["loss"] = float(total.detach())
     return total, parts
 
 
@@ -225,6 +251,9 @@ def train_model(
                 out, batch, cfg.cls_loss_weight, cfg.reg_loss_weight,
                 label_smoothing=cfg.label_smoothing,
                 inflection_w=getattr(cfg, "inflection_loss_weight", 0.0),
+                path_shape_w=getattr(cfg, "path_shape_loss_weight", 0.0),
+                returns_w=getattr(cfg, "returns_loss_weight", 0.0),
+                clears_level_w=getattr(cfg, "clears_level_loss_weight", 0.0),
             )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)

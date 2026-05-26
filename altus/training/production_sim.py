@@ -110,6 +110,25 @@ class L3Config:
     # entry uses the last entry's lockout. User spec: 0/10/20/30/30+.
     cooldown_schedule: tuple = ((2, 10), (3, 20), (4, 30))
 
+    # ----- Setup-aware execution (2026-05-25 — FRAMEWORK.md / SETUPS.md) -----
+    # When True, L3 uses setup-conditional stops/targets/hold-times keyed by
+    # the setup_id in candidates' metadata. Falls back to label-based barriers
+    # when setup_id is None (no-setup-mode candidates).
+    use_setup_aware_execution: bool = True
+
+    # Per-setup execution parameters: (target_atr_mult, stop_atr_mult, hold_bars).
+    # Derived from SETUPS.md per-setup C/D/E specifications.
+    setup_execution_params: dict = field(default_factory=lambda: {
+        "sfs":   {"target_atr": 1.5, "stop_atr": 0.6, "hold_bars": 45},   # A3 failed sweep
+        "sfa":   {"target_atr": 1.3, "stop_atr": 0.8, "hold_bars": 60},   # A6 failed auction
+        "sld":   {"target_atr": 1.2, "stop_atr": 0.5, "hold_bars": 40},   # A8 level defense
+        "orb":   {"target_atr": 1.5, "stop_atr": 1.0, "hold_bars": 60},   # A1 ORB
+        "svwap": {"target_atr": 1.0, "stop_atr": 0.5, "hold_bars": 40},   # A2 VWAP
+        "spb":   {"target_atr": 1.2, "stop_atr": 0.6, "hold_bars": 45},   # A4 pullback
+        "scomp": {"target_atr": 1.5, "stop_atr": 0.7, "hold_bars": 30},   # A5 compression
+        "seod":  {"target_atr": 0.4, "stop_atr": 0.5, "hold_bars": 20},   # A7 EOD reversion
+    })
+
     # ----- TopStep telemetry (informational only, NEVER gates entries) -----
     topstep_daily_loss_usd: float = 1_000.0
     topstep_trailing_dd_usd: float = 2_000.0
