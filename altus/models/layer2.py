@@ -110,6 +110,28 @@ LAYER2_INPUT_FEATURES = (
     "bocpd_age_5m", "bocpd_cp_prob_5m", "bocpd_entropy_5m",
     "bocpd_age_60m", "bocpd_cp_prob_60m", "bocpd_entropy_60m",
     "bocpd_age_4h", "bocpd_cp_prob_4h", "bocpd_entropy_4h",
+    # --- L2 confidence modulators (2026-05-26 — FRAMEWORK.md F/G tier) ---
+    # Path clearance: bidirectional booster — bigger clearance = more conviction.
+    "pc_clearance_above_atr", "pc_clearance_below_atr",
+    "pc_obstacle_above_strength", "pc_obstacle_below_strength",
+    "pc_clearance_asymmetry", "pc_clearance_min_atr",
+    # Stop pool: fuel detector — bigger pool = bigger expected magnitude.
+    "sp_pool_above_size_atr", "sp_pool_below_size_atr",
+    "sp_trigger_distance_above_atr", "sp_trigger_distance_below_atr",
+    "sp_pool_imminent",
+    # Setup confluence: multi-setup alignment.
+    "scf_long_count", "scf_short_count", "scf_consensus_score", "scf_total_active",
+    # Cross-asset setup confirmation: NQ/ES alignment.
+    "cac_es_direction_proxy", "cac_nq_es_aligned",
+    "cac_lead_lag_signed", "cac_divergence_active",
+    # Vol regime sweet-spot per setup (one feature per setup + average).
+    "vss_match_sfs", "vss_match_sfa", "vss_match_sld", "vss_match_orb",
+    "vss_match_svwap", "vss_match_spb", "vss_match_scomp", "vss_match_seod",
+    "vss_avg_match",
+    # Time-of-day fitness per setup.
+    "tof_fit_sfs", "tof_fit_sfa", "tof_fit_sld", "tof_fit_orb",
+    "tof_fit_svwap", "tof_fit_spb", "tof_fit_scomp", "tof_fit_seod",
+    "tof_avg_fit",
 )
 
 

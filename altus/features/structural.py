@@ -19,6 +19,7 @@ from altus.features.families import (
     bocpd_regime,
     corr_regime,
     cross_asset,
+    cross_asset_setup_confirm,
     exhaustion,
     expectation_surprise,
     extension,
@@ -29,12 +30,14 @@ from altus.features.families import (
     liquidity_asymmetry,
     liquidity_zones,
     mtf_alignment,
+    path_clearance,
     prior_day_anchors,
     pv_divergence,
     round_levels,
     session_anatomy,
     session_time,
     setup_compression,
+    setup_confluence,
     setup_eod,
     setup_failed_auction,
     setup_failed_sweep,
@@ -43,11 +46,14 @@ from altus.features.families import (
     setup_pullback,
     setup_vwap,
     simmtm,
+    stop_pool,
     sweep_detection,
     tape_rhythm,
+    time_of_day_fitness,
     trend_hurst,
     trend_structure,
     vol_regime,
+    vol_sweet_spot,
     volatility,
     volume_profile,
     vwap_anchors,
@@ -107,6 +113,14 @@ _FAMILY_REGISTRY = {
     "spb":       setup_pullback,       # A4 — trend pullback continuation (5 feats)
     "scomp":     setup_compression,    # A5 — compression breakout (5 feats)
     "seod":      setup_eod,            # A7 — EOD mean reversion (5 feats)
+    # L2-tier confidence modulators (2026-05-26) — bidirectional boosters.
+    # These ADD evidence to setup signals, never veto.
+    "pclear":    path_clearance,             # 6 feats — clearance + obstacle strength per side
+    "spool":     stop_pool,                  # 5 feats — stop pool size + trigger proximity
+    "scnf":      setup_confluence,           # 4 feats — multi-setup direction counts
+    "cac":       cross_asset_setup_confirm,  # 4 feats — NQ/ES alignment
+    "vss":       vol_sweet_spot,             # 9 feats — per-setup vol regime fitness
+    "tof":       time_of_day_fitness,        # 9 feats — per-setup time window fitness
 }
 
 
@@ -170,17 +184,43 @@ def build_structural_features(
     # (i.e., they're running with PRIMARY_WINDOW_MIN=1 or pre-refactor code).
     raw_1m = df_1m if df_1m is not None else df_primary
 
-    blocks: list[pd.DataFrame] = []
+    # Two-pass family compute. Pass 1 = base families (most). Pass 2 =
+    # aggregator families that need PRIOR_FEATURES (e.g., setup_confluence
+    # reads from already-computed setup_X_active columns).
+    pass_1_blocks: list[pd.DataFrame] = []
+    pass_2_families: list[tuple[str, object]] = []
     for name, module in _FAMILY_REGISTRY.items():
         if name not in spec.enabled:
             continue
+        if getattr(module, "IS_AGGREGATOR", False):
+            pass_2_families.append((name, module))
+            continue
         if getattr(module, "NEEDS_RAW_1M", False):
-            # HTF-resample families need clean non-overlapping 1m bars to aggregate.
-            blocks.append(module.compute(df_primary, df_1m=raw_1m))
+            pass_1_blocks.append(module.compute(df_primary, df_1m=raw_1m))
         else:
-            blocks.append(module.compute(df_primary))
+            pass_1_blocks.append(module.compute(df_primary))
 
-    X = pd.concat(blocks, axis=1)
+    if pass_1_blocks:
+        X_pass1 = pd.concat(pass_1_blocks, axis=1)
+    else:
+        X_pass1 = pd.DataFrame(index=df_primary.index)
+
+    # Pass 2: aggregators see the concatenated pass-1 features as df_primary
+    # (so they can read setup_X_active etc). df_1m still available for those
+    # that need it. The aggregator can read any column from pass 1.
+    pass_2_blocks: list[pd.DataFrame] = []
+    if pass_2_families:
+        # Build an "enriched" view: original OHLCV + pass-1 features.
+        # Aggregators expect to read pass-1 columns (setup features etc).
+        enriched = pd.concat([df_primary, X_pass1], axis=1)
+        for name, module in pass_2_families:
+            if getattr(module, "NEEDS_RAW_1M", False):
+                pass_2_blocks.append(module.compute(enriched, df_1m=raw_1m))
+            else:
+                pass_2_blocks.append(module.compute(enriched))
+
+    all_blocks = pass_1_blocks + pass_2_blocks
+    X = pd.concat(all_blocks, axis=1) if all_blocks else pd.DataFrame(index=df_primary.index)
 
     if spec.causal_shift:
         # Same convention as altus/features/pipeline.py: features at row T must

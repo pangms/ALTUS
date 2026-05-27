@@ -35,6 +35,8 @@ PHASE_E="round,mtf,pvd,vreg,sanat,creg,surprise"
 ANCHORS="pda,vwap,tstruct"
 # Predictive setup library — 8 setups per FRAMEWORK.md A-tier:
 SETUPS="sfs,sfa,sld,orb,svwap,spb,scomp,seod"
+# L2-tier confidence modulators (2026-05-26 — bidirectional boosters):
+MODULATORS="pclear,spool,scnf,cac,vss,tof"
 
 ARTIFACTS_DIR="/workspace/ALTUS/artifacts"
 SUMMARY_FILE="$ARTIFACTS_DIR/sweep_baseline_summary_$(date +%Y%m%d_%H%M%S).txt"
@@ -65,14 +67,16 @@ LABELS=(
     "02_descriptive_full"   # +Phase E + BOCPD + anchors (descriptive layer complete)
     "03_setups_only"        # baseline + 8 setups (predictive A-tier alone)
     "04_predictive_full"    # full predictive: anchors + setups (Tier A all stages)
-    "05_with_simmtm"        # 04 + SimMTM (cache must exist) — pattern similarity
+    "05_with_modulators"    # 04 + L2 confidence modulators (full stack ex-SimMTM)
+    "06_full_with_simmtm"   # 05 + SimMTM — THE COMPREHENSIVE TEST
 )
 FAMILIES_LIST=(
     "$BASE"
     "$BASE,$PHASE_E,bocpd,$ANCHORS"
     "$BASE,bocpd,$SETUPS"
     "$BASE,$PHASE_E,bocpd,$ANCHORS,$SETUPS"
-    "$BASE,$PHASE_E,bocpd,$ANCHORS,$SETUPS,simmtm"
+    "$BASE,$PHASE_E,bocpd,$ANCHORS,$SETUPS,$MODULATORS"
+    "$BASE,$PHASE_E,bocpd,$ANCHORS,$SETUPS,$MODULATORS,simmtm"
 )
 
 echo " Specs scheduled: ${#LABELS[@]} runs" | tee -a "$SUMMARY_FILE"

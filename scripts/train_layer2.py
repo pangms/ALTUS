@@ -365,6 +365,72 @@ def main():
         print(f"  {l3_setup.summary_line()}")
         n_setup_trades = sum(1 for s in setup_ids_per_bar if s is not None)
         print(f"  bars with active setup: {n_setup_trades:,} / {n_eval:,}")
+
+        # ---- Bootstrap setup-performance tracker from this run's outcomes ----
+        # For each bar that had an active setup, compute the realized R-multiple
+        # using setup-aware execution + label outcomes, then populate the
+        # SetupPerformanceTracker. Persisted to JSON for next iteration's B1
+        # conditional-WR feature.
+        from altus.training.setup_performance import SetupPerformanceTracker
+        # Regime ID proxy: use bocpd_age_60m bucket if available, else 0
+        if "bocpd_age_60m" in feats_at_val.columns:
+            bocpd_age = feats_at_val["bocpd_age_60m"].to_numpy()
+            regime_ids = np.digitize(bocpd_age, bins=[30, 100, 300]).astype(np.int64)
+        else:
+            regime_ids = np.zeros(n_eval, dtype=np.int64)
+
+        # Compute realized R per bar from actual mfe/mae vs setup barriers
+        eval_long_tp = labels_val.long_tp[eval_mask].astype(np.float32)
+        eval_short_tp = labels_val.short_tp[eval_mask].astype(np.float32)
+        eval_mfe_long = labels_val.mfe_long[eval_mask]
+        eval_mae_long = labels_val.mae_long[eval_mask]
+        eval_mfe_short = labels_val.mfe_short[eval_mask]
+        eval_mae_short = labels_val.mae_short[eval_mask]
+        realized_r = np.zeros(n_eval, dtype=np.float32)
+        for i in range(n_eval):
+            sid = setup_ids_per_bar[i]
+            if sid is None:
+                continue
+            stop = sl_eff[i]
+            target = tp_eff[i]
+            if stop <= 0:
+                continue
+            # Determine direction from setup features
+            row = feats_at_val.iloc[i]
+            dir_col = f"{sid}_direction"
+            direction = int(round(float(row.get(dir_col, 0)))) if dir_col in row.index else 0
+            if direction == 0:
+                continue
+            if direction > 0:
+                mfe = float(eval_mfe_long[i]); mae = float(eval_mae_long[i])
+            else:
+                mfe = float(eval_mfe_short[i]); mae = float(eval_mae_short[i])
+            # Did target hit before stop?
+            if mfe >= target and mae < stop:
+                r = target / stop
+            elif mae >= stop:
+                r = -1.0
+            else:
+                # Timeout: rough R from mfe-mae
+                r = (mfe - mae) / stop
+            realized_r[i] = float(np.clip(r, -3.0, 3.0))
+
+        tracker_path = ARTIFACT_DIR / "setup_performance_tracker.json"
+        tracker = SetupPerformanceTracker(persistence_path=tracker_path)
+        n_bootstrapped = tracker.bootstrap_from_predictions(
+            setup_ids_per_bar,
+            regime_ids,
+            realized_r,
+            labels_val.index[eval_mask].values,
+        )
+        print(f"  bootstrapped tracker: {n_bootstrapped} trades recorded, "
+              f"saved to {tracker_path}")
+        # Print cell summary
+        summary = tracker.summary()
+        if summary:
+            print("  per-cell performance:")
+            for cell, stats in sorted(summary.items()):
+                print(f"    {cell}: n={stats['n']} wr={stats['wr']:.3f} r_mean={stats['r_mean']:+.3f}")
     else:
         print("  (skipping setup-aware cascade — no setup features in feature matrix)")
 
