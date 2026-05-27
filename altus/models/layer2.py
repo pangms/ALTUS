@@ -132,6 +132,37 @@ LAYER2_INPUT_FEATURES = (
     "tof_fit_sfs", "tof_fit_sfa", "tof_fit_sld", "tof_fit_orb",
     "tof_fit_svwap", "tof_fit_spb", "tof_fit_scomp", "tof_fit_seod",
     "tof_avg_fit",
+    # --- Per-setup detector outputs (2026-05-26 — Disconnection 2 fix) ---
+    # Without these the L2 MLP cannot see which setup is firing, making
+    # "setup-conditional WR" mathematically impossible. Each setup exposes:
+    #   active   ∈ {0,1}   — fired this bar
+    #   strength ∈ [0,1]   — soft confidence
+    #   direction∈ {-1,0,+1} — proposed side
+    #   + 2 setup-specific state features for richer context.
+    # sfs — failed sweep (A3)
+    "sfs_active", "sfs_strength", "sfs_direction",
+    "sfs_age_bars", "sfs_level_type",
+    # sfa — failed auction (A6)
+    "sfa_active", "sfa_strength", "sfa_direction",
+    "sfa_touch_count", "sfa_age_bars",
+    # sld — level defense (A8)
+    "sld_active", "sld_strength", "sld_direction",
+    "sld_defense_count", "sld_dist_to_level_atr",
+    # orb — Open Range Breakout (A1)
+    "orb_active", "orb_strength", "orb_direction",
+    "orb_breakout_age", "orb_range_atr",
+    # svwap — VWAP rejection/reclaim (A2)
+    "svwap_active", "svwap_strength", "svwap_direction",
+    "svwap_dist_atr", "svwap_holds_count",
+    # spb — pullback continuation (A4)
+    "spb_active", "spb_strength", "spb_direction",
+    "spb_pullback_depth", "spb_dist_to_ema21_atr",
+    # scomp — compression breakout (A5)
+    "scomp_active", "scomp_strength", "scomp_direction",
+    "scomp_compression_ratio", "scomp_expansion_magnitude",
+    # seod — EOD reversion (A7)
+    "seod_active", "seod_strength", "seod_direction",
+    "seod_band_position", "seod_mins_until_close",
 )
 
 
@@ -216,16 +247,24 @@ def build_layer2_input(
     }
     df = pd.DataFrame(data, index=index)
 
-    # Join structural features (vol, trend, anomaly). Drop the causal shift the
-    # structural pipeline adds, since we're already aligned to entry timestamps.
+    # Join structural features (vol, trend, anomaly). The structural matrix is
+    # already causally-shifted by build_structural_features (X.shift(1) — row T
+    # contains info from bar T-1), and we reindex to entry timestamps, so the
+    # entry-bar features are correctly forward-blind.
+    # Build the missing-column block en-bloc via pd.concat (was per-column
+    # df[col] = ... which fragments the DataFrame and is O(N²) for 80+ cols).
     struct_cols = [c for c in LAYER2_INPUT_FEATURES if c not in df.columns]
     avail_struct = structural_features.reindex(index)
+    struct_block: dict[str, np.ndarray] = {}
+    n = len(index)
     for col in struct_cols:
         if col in avail_struct.columns:
-            df[col] = avail_struct[col].astype(np.float32).to_numpy()
+            struct_block[col] = avail_struct[col].astype(np.float32).to_numpy()
         else:
             # Missing structural feature — fill with 0 and let model learn
-            df[col] = np.zeros(len(index), dtype=np.float32)
+            struct_block[col] = np.zeros(n, dtype=np.float32)
+    if struct_block:
+        df = pd.concat([df, pd.DataFrame(struct_block, index=index)], axis=1)
 
     return df[list(LAYER2_INPUT_FEATURES)]
 

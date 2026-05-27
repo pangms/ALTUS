@@ -131,6 +131,18 @@ def _predict(
     # Phase H: inflection predictions + truths (only collected if model emits them)
     infl_pred_buf: list[np.ndarray] = []
     infl_truth_buf: list[np.ndarray] = []
+    # Predictive framework heads (2026-05-26 — closes the dead-code gap where
+    # path_shape / return_H15 / return_H60 / clears_level were trained as
+    # regularizers but never extracted for L2/L3 to consume).
+    path_shape_buf: list[np.ndarray] = []
+    return_h15_buf: list[np.ndarray] = []
+    return_h60_buf: list[np.ndarray] = []
+    clears_level_buf: list[np.ndarray] = []
+    # Matching truths so L2/eval can compute calibration / lift
+    return_h15_truth_buf: list[np.ndarray] = []
+    return_h60_truth_buf: list[np.ndarray] = []
+    path_shape_truth_buf: list[np.ndarray] = []
+    clears_truth_buf: list[np.ndarray] = []
     emb_buf: list[np.ndarray] = []
     for batch in loader:
         x = batch["x"].to(device)
@@ -147,6 +159,22 @@ def _predict(
             infl_pred_buf.append(out.inflection_prob.cpu().numpy())
             if "inflection" in batch:
                 infl_truth_buf.append(batch["inflection"].numpy())
+        # Predictive heads — extracted when present.
+        if out.path_shape_logits is not None:
+            path_shape_buf.append(out.path_shape_probs.cpu().numpy())
+            if "path_shape_class" in batch:
+                path_shape_truth_buf.append(batch["path_shape_class"].numpy())
+        if out.return_H15 is not None:
+            return_h15_buf.append(out.return_H15.cpu().numpy())
+            return_h60_buf.append(out.return_H60.cpu().numpy())
+            if "return_H15" in batch:
+                return_h15_truth_buf.append(batch["return_H15"].numpy())
+            if "return_H60" in batch:
+                return_h60_truth_buf.append(batch["return_H60"].numpy())
+        if out.clears_level_logit is not None:
+            clears_level_buf.append(out.clears_level_prob.cpu().numpy())
+            if "clears_1atr" in batch:
+                clears_truth_buf.append(batch["clears_1atr"].numpy())
         if return_embeddings and out.fusion_embedding is not None:
             emb_buf.append(out.fusion_embedding.cpu().numpy())
     preds = {k: np.concatenate(v) for k, v in preds_buf.items()}
@@ -155,6 +183,21 @@ def _predict(
         preds["inflection_prob"] = np.concatenate(infl_pred_buf)
     if infl_truth_buf:
         truths["inflection"] = np.concatenate(infl_truth_buf)
+    if path_shape_buf:
+        preds["path_shape_probs"] = np.concatenate(path_shape_buf, axis=0)  # (N, 3)
+    if path_shape_truth_buf:
+        truths["path_shape_class"] = np.concatenate(path_shape_truth_buf)
+    if return_h15_buf:
+        preds["return_H15"] = np.concatenate(return_h15_buf)
+        preds["return_H60"] = np.concatenate(return_h60_buf)
+    if return_h15_truth_buf:
+        truths["return_H15"] = np.concatenate(return_h15_truth_buf)
+    if return_h60_truth_buf:
+        truths["return_H60"] = np.concatenate(return_h60_truth_buf)
+    if clears_level_buf:
+        preds["clears_level_prob"] = np.concatenate(clears_level_buf)
+    if clears_truth_buf:
+        truths["clears_1atr"] = np.concatenate(clears_truth_buf)
     if return_embeddings and emb_buf:
         preds["fusion_embedding"] = np.concatenate(emb_buf, axis=0).astype(np.float32)
     return preds, truths

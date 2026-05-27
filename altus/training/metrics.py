@@ -15,7 +15,7 @@ means. Brier score and reliability diagrams reveal calibration directly.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -41,6 +41,10 @@ class MetricsBundle:
     top_1pct_winrate: dict[str, float]
     mfe_rmse: dict[str, float]
     mae_rmse: dict[str, float]
+    # --- Predictive-vs-pacing diagnostics (2026-05-26) ---
+    # Populated by evaluate_predictions when the new heads are present in
+    # preds/truths. NaN means the head wasn't trained for this run.
+    predictive_diag: dict[str, float] = field(default_factory=dict)
 
     def summary_line(self) -> str:
         auc_l = self.auc.get("long_tp", float("nan"))
@@ -54,6 +58,66 @@ class MetricsBundle:
             f"| BrierImp L={bri_l:+.3f} S={bri_s:+.3f} "
             f"| TopDecileWR L={td_l:.3f} S={td_s:.3f}"
         )
+
+    def predictive_diag_line(self) -> str:
+        """One-line summary of the predictive-vs-pacing diagnostics.
+
+        Interpretation:
+          - dir_pl_ps_corr near -1 = predictive (L/S mutually exclusive)
+                          near +1 = PACING (both fire on volatility)
+          - ic_H15 / ic_H60 > 0.05 = real signal on return horizon
+          - ps_acc > 0.38 = path_shape beats 33% chance baseline
+          - clr_auc > 0.55 = clears_level above coin-flip
+        """
+        if not self.predictive_diag:
+            return "(predictive diagnostics not available — heads not trained?)"
+        d = self.predictive_diag
+        def _f(key, fmt="{:+.3f}"):
+            v = d.get(key, float("nan"))
+            return fmt.format(v) if not np.isnan(v) else "  nan"
+        return (
+            f"PREDICTIVE-DIAG | "
+            f"corr(P_L,P_S)={_f('dir_pl_ps_corr')} "
+            f"ic_H15={_f('ic_return_H15')} ic_H60={_f('ic_return_H60')} "
+            f"ps_acc={_f('path_shape_accuracy', '{:.3f}')} "
+            f"clr_auc={_f('clears_level_auc', '{:.3f}')}"
+        )
+
+    def predictive_diag_verdict(self) -> str:
+        """Coarse heuristic verdict on predictive vs pacing.
+
+        Used in the FINAL SUMMARY of the sweep to flag pacing-mode failures
+        before we squint at PnL.
+        """
+        if not self.predictive_diag:
+            return "INCONCLUSIVE — predictive heads not trained"
+        d = self.predictive_diag
+        corr = d.get("dir_pl_ps_corr", float("nan"))
+        ic15 = d.get("ic_return_H15", float("nan"))
+        ic60 = d.get("ic_return_H60", float("nan"))
+        ps = d.get("path_shape_accuracy", float("nan"))
+        clr = d.get("clears_level_auc", float("nan"))
+
+        # Tell-tale of pacing mode: dir corr is positive (both sides rise/fall together)
+        if not np.isnan(corr) and corr > 0.5:
+            return "PACING — long/short probs co-move (volatility detector)"
+        # Tell-tale of real predictive content
+        good = 0
+        if not np.isnan(corr) and corr < -0.3:
+            good += 1
+        if not np.isnan(ic15) and ic15 > 0.03:
+            good += 1
+        if not np.isnan(ic60) and ic60 > 0.03:
+            good += 1
+        if not np.isnan(ps) and ps > 0.38:
+            good += 1
+        if not np.isnan(clr) and clr > 0.53:
+            good += 1
+        if good >= 3:
+            return f"PREDICTIVE ({good}/5 diagnostics pass)"
+        if good >= 1:
+            return f"WEAK ({good}/5 diagnostics pass — marginal signal)"
+        return "PACING-LIKE (0/5 diagnostics pass — no clear forward signal)"
 
     def mean_auc(self) -> float:
         vals = [v for v in self.auc.values() if not np.isnan(v)]
@@ -117,6 +181,61 @@ def evaluate_predictions(
         mfe_rmse[mfe_k] = float(np.sqrt(np.mean((preds[mfe_k] - truths[mfe_k]) ** 2)))
         mae_rmse[mae_k] = float(np.sqrt(np.mean((preds[mae_k] - truths[mae_k]) ** 2)))
 
+    # --- Predictive-vs-pacing diagnostics --------------------------------
+    # These 5 numbers separate "real forward prediction" from "calibrated
+    # volatility detector" — see MetricsBundle.predictive_diag_line docstring
+    # for interpretation.
+    diag: dict[str, float] = {}
+
+    # 1) Long/short prob correlation. A predictive 3-class softmax should give
+    #    near-mutually-exclusive long and short probs (corr ≈ -1). A pacing
+    #    volatility detector gives both rising together (corr ≈ +1).
+    if "long_tp_prob" in preds and "short_tp_prob" in preds:
+        pL = np.asarray(preds["long_tp_prob"], dtype=np.float64)
+        pS = np.asarray(preds["short_tp_prob"], dtype=np.float64)
+        if pL.std() > 1e-9 and pS.std() > 1e-9:
+            diag["dir_pl_ps_corr"] = float(np.corrcoef(pL, pS)[0, 1])
+        else:
+            diag["dir_pl_ps_corr"] = float("nan")
+
+    # 2) Spearman IC on return_H15 and return_H60 — > 0.05 OOS is real signal
+    if "return_H15" in preds and "return_H15" in truths:
+        diag["ic_return_H15"] = _ic(
+            np.asarray(truths["return_H15"], dtype=np.float64),
+            np.asarray(preds["return_H15"], dtype=np.float64),
+        )
+        diag["var_pred_return_H15"] = float(np.var(preds["return_H15"]))
+    if "return_H60" in preds and "return_H60" in truths:
+        diag["ic_return_H60"] = _ic(
+            np.asarray(truths["return_H60"], dtype=np.float64),
+            np.asarray(preds["return_H60"], dtype=np.float64),
+        )
+        diag["var_pred_return_H60"] = float(np.var(preds["return_H60"]))
+
+    # 3) path_shape multi-class accuracy + per-class — > 0.38 beats the
+    #    3-class chance baseline of 1/3. Also report per-class precision so
+    #    we can see if the model collapsed to a single class.
+    if "path_shape_probs" in preds and "path_shape_class" in truths:
+        ps_probs = np.asarray(preds["path_shape_probs"])  # (N, 3)
+        ps_true = np.asarray(truths["path_shape_class"], dtype=np.int64)
+        if ps_probs.ndim == 2 and ps_probs.shape[1] >= 3:
+            ps_pred = np.argmax(ps_probs, axis=1)
+            diag["path_shape_accuracy"] = float((ps_pred == ps_true).mean())
+            for cls in (0, 1, 2):
+                mask = ps_true == cls
+                if mask.sum() > 0:
+                    diag[f"path_shape_recall_c{cls}"] = float((ps_pred[mask] == cls).mean())
+                    diag[f"path_shape_base_rate_c{cls}"] = float(mask.mean())
+
+    # 4) clears_level binary AUC — > 0.55 means the head learned something
+    #    beyond marginal class rate
+    if "clears_level_prob" in preds and "clears_1atr" in truths:
+        diag["clears_level_auc"] = _safe_auc(
+            np.asarray(truths["clears_1atr"], dtype=np.float64),
+            np.asarray(preds["clears_level_prob"], dtype=np.float64),
+        )
+        diag["clears_level_base_rate"] = float(np.asarray(truths["clears_1atr"]).mean())
+
     return MetricsBundle(
         n=n,
         base_rate=base,
@@ -131,6 +250,7 @@ def evaluate_predictions(
         top_1pct_winrate=top1,
         mfe_rmse=mfe_rmse,
         mae_rmse=mae_rmse,
+        predictive_diag=diag,
     )
 
 

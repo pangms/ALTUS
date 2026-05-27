@@ -156,6 +156,9 @@ def _serialize_metrics(m) -> dict | None:
         "mfe_rmse": m.mfe_rmse,
         "mae_rmse": m.mae_rmse,
         "mean_auc": m.mean_auc(),
+        "predictive_diag": getattr(m, "predictive_diag", {}),
+        "predictive_diag_verdict": (m.predictive_diag_verdict()
+                                    if hasattr(m, "predictive_diag_verdict") else None),
     }
 
 
@@ -351,6 +354,11 @@ def main():
             val_metrics_cal = evaluate_predictions(val_preds_cal, result.val_truths)
             print(f"  VAL raw: {result.val_metrics.summary_line()}")
             print(f"  VAL cal: {val_metrics_cal.summary_line()}")
+            # Predictive-vs-pacing diagnostics — separates true forward
+            # prediction from sophisticated volatility detection. See
+            # MetricsBundle.predictive_diag_line for interpretation.
+            print(f"  VAL {val_metrics_cal.predictive_diag_line()}")
+            print(f"  VAL verdict: {val_metrics_cal.predictive_diag_verdict()}")
 
             # Per-fold val percentile sweep
             val_kept = val_ds.sample_positions
@@ -409,6 +417,8 @@ def main():
             oos_metrics_cal = evaluate_predictions(oos_preds_cal, oos_truths)
             print(f"  OOS raw: {oos_metrics_raw.summary_line()}")
             print(f"  OOS cal: {oos_metrics_cal.summary_line()}")
+            print(f"  OOS {oos_metrics_cal.predictive_diag_line()}")
+            print(f"  OOS verdict: {oos_metrics_cal.predictive_diag_verdict()}")
 
             oos_kept = oos_ds.sample_positions
             oos_ts = labels.index.to_numpy()[oos_kept]
@@ -444,6 +454,17 @@ def main():
               f"short={m['brier_improvement'].get('short_tp', float('nan')):+.3f}")
         print(f"  Top-decile win rate: long={m['top_decile_winrate'].get('long_tp', float('nan')):.3f}  "
               f"short={m['top_decile_winrate'].get('short_tp', float('nan')):.3f}")
+        # Predictive-vs-pacing verdict — flags pacing-mode failures before
+        # we look at PnL. PnL alone can't tell us if signal is real.
+        pdiag = m.get("predictive_diag", {}) or {}
+        if pdiag:
+            print(f"  predictive: corr(P_L,P_S)={pdiag.get('dir_pl_ps_corr', float('nan')):+.3f}  "
+                  f"ic_H15={pdiag.get('ic_return_H15', float('nan')):+.3f}  "
+                  f"ic_H60={pdiag.get('ic_return_H60', float('nan')):+.3f}  "
+                  f"ps_acc={pdiag.get('path_shape_accuracy', float('nan')):.3f}  "
+                  f"clr_auc={pdiag.get('clears_level_auc', float('nan')):.3f}")
+        if m.get("predictive_diag_verdict"):
+            print(f"  VERDICT: {m['predictive_diag_verdict']}")
         if sweep:
             for k_label in ("top1pct", "top5pct", "top10pct", "top20pct"):
                 s = sweep[k_label]

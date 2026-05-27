@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -300,6 +301,54 @@ def main():
         # Extract setup features for each val bar
         feats_at_val = feats.reindex(labels_val.index[eval_mask])
 
+        # -------- Setup-conditional WR diagnostic ---------------------------
+        # The first sanity check on "do setups carry signal":
+        #   unconditional WR vs setup-active WR (per setup, per side).
+        # If lift < 1pp across most setups, the setup library is decoration —
+        # it identifies configurations the market doesn't actually resolve
+        # asymmetrically. If lift > 3pp on the predictive A-tier setups
+        # (sfs/sfa/sld), the library has earned its place.
+        #
+        # We use the realized label outcome directly (long_tp / short_tp) as
+        # the WR target — not L2's calibrated prob — so this is a property
+        # of the feature library, not the model.
+        print("\n" + "=" * 72)
+        print(" SETUP-CONDITIONAL WR DIAGNOSTIC (val slice, realized labels)")
+        print(" Tests whether each setup-active condition shifts WR vs unconditional")
+        print("=" * 72)
+        long_tp_eval = labels_val.long_tp[eval_mask].astype(np.float32)
+        short_tp_eval = labels_val.short_tp[eval_mask].astype(np.float32)
+        uncond_long_wr = float(long_tp_eval.mean())
+        uncond_short_wr = float(short_tp_eval.mean())
+        print(f"  unconditional WR: long={uncond_long_wr:.4f}  short={uncond_short_wr:.4f}  "
+              f"n={len(long_tp_eval):,}")
+        for setup_id in ("sfs", "sfa", "sld", "orb", "svwap", "spb", "scomp", "seod"):
+            active_col = f"{setup_id}_active"
+            dir_col = f"{setup_id}_direction"
+            if active_col not in feats_at_val.columns:
+                continue
+            active = (feats_at_val[active_col].to_numpy(dtype=np.float32) >= 0.5)
+            direction = feats_at_val[dir_col].to_numpy(dtype=np.float32) if dir_col in feats_at_val.columns else np.zeros(len(active))
+            is_long = active & (direction > 0.5)
+            is_short = active & (direction < -0.5)
+            n_long, n_short = int(is_long.sum()), int(is_short.sum())
+            wr_long = float(long_tp_eval[is_long].mean()) if n_long > 0 else float("nan")
+            wr_short = float(short_tp_eval[is_short].mean()) if n_short > 0 else float("nan")
+            lift_long = (wr_long - uncond_long_wr) * 100.0 if n_long > 0 else float("nan")
+            lift_short = (wr_short - uncond_short_wr) * 100.0 if n_short > 0 else float("nan")
+            # Verdict flag
+            verdict = ""
+            if n_long >= 30 and lift_long > 3.0:
+                verdict += " LONG✓"
+            elif n_long >= 30 and lift_long < -1.0:
+                verdict += " LONG✗"
+            if n_short >= 30 and lift_short > 3.0:
+                verdict += " SHORT✓"
+            elif n_short >= 30 and lift_short < -1.0:
+                verdict += " SHORT✗"
+            print(f"  {setup_id:>5}: nL={n_long:>5} wr={wr_long:.3f} lift={lift_long:+5.1f}pp  "
+                  f"|  nS={n_short:>5} wr={wr_short:.3f} lift={lift_short:+5.1f}pp{verdict}")
+
         def _setup_candidates_for_bar(row) -> list[SetupCandidate]:
             cands = []
             for setup_id in ("sfs", "sfa", "sld", "orb", "svwap", "spb", "scomp", "seod"):
@@ -315,9 +364,53 @@ def main():
                     ))
             return cands
 
-        # Per-bar setup_id (primary winner from arbitrator) — None when no setup
+        # Per-bar setup_id (primary winner from FULL router cascade) — None
+        # when no setup OR when the router abstains (modulator-shrunk WR below
+        # breakeven, conformal lower bound below threshold, ambiguous conflict).
+        # Disconnection-3 fix (2026-05-26): exercises Stages 1-4 of the L2 router
+        # (arbitrate_setups + L2-prob base WR + apply_modulators + gate_decision)
+        # instead of arbitrate_setups alone — so the modulator features earn
+        # their place AND the conformal gate actually gates.
         n_eval = int(eval_mask.sum())
         setup_ids_per_bar = [None] * n_eval
+        router_directions = np.zeros(n_eval, dtype=np.int8)
+        router_adjusted_wr = np.zeros(n_eval, dtype=np.float32)
+        router_sizing = np.zeros(n_eval, dtype=np.float32)
+        abstain_reasons: dict[str, int] = {}
+
+        # Conformal half-width — read directly from the calibrated gate's
+        # _q_lo. Used to build a per-bar lower bound (prob - half_width).
+        try:
+            conformal_hw = float(getattr(result.conformal, "_q_lo", None) or 0.05)
+        except Exception:
+            conformal_hw = 0.05
+
+        long_prob_eval = long_prob_l2[eval_mask]
+        short_prob_eval = short_prob_l2[eval_mask]
+
+        def _base_wr_predictor_factory(bar_idx: int):
+            """Returns a closure: (setup_id, ctx) -> base_wr.
+            Uses L2's calibrated prob for the setup's direction at this bar;
+            falls back to BASELINE_WR if the bar isn't an L2 candidate."""
+            lp = float(long_prob_eval[bar_idx])
+            sp = float(short_prob_eval[bar_idx])
+            def _predict(setup_id, ctx):
+                if setup_id is None:
+                    # no-setup fallback — conservative
+                    return float(max(lp, sp)) * 0.95
+                # Pull direction from candidates
+                dir_for_setup = 0
+                for c in ctx.get("candidates", []):
+                    if c.setup_id == setup_id:
+                        dir_for_setup = c.direction
+                        break
+                base_l2 = lp if dir_for_setup > 0 else (sp if dir_for_setup < 0 else 0.0)
+                if base_l2 > 0.0:
+                    return base_l2
+                # Bar isn't an L2 candidate — use setup baseline (priors only).
+                return float(BASELINE_WR.get(setup_id, 0.50))
+            return _predict
+
         for i in range(n_eval):
             row = feats_at_val.iloc[i] if i < len(feats_at_val) else None
             if row is None or row.isna().all():
@@ -325,13 +418,45 @@ def main():
             cands = _setup_candidates_for_bar(row)
             if not cands:
                 continue
-            # Use the router's arbitration alone (no MLP base WR — we use
-            # L2's already-calibrated prob as the WR estimate for the bar
-            # if it's a candidate, else BASELINE_WR for the primary setup).
-            from altus.training.l2_router import arbitrate_setups
-            setup_id, _ = arbitrate_setups(cands)
-            if setup_id is not None:
-                setup_ids_per_bar[i] = setup_id
+
+            # Build modulator context from L2-input feature columns.
+            htf_agreement = float(row.get("trend_alignment", 0.0) or 0.0)
+            # Model confidence: 1 - normalized 3-class entropy proxy.
+            ent = float(row.get("derived_entropy", 0.0) or 0.0)
+            model_conf = float(np.clip(1.0 - (ent / math.log(3.0)), 0.0, 1.0)) if ent > 0 else 0.7
+            xa_div = bool(int(round(float(row.get("cac_divergence_active", 0.0) or 0.0))))
+            # Conformal LB at this bar — approximate with max-side prob - hw
+            max_side = max(float(long_prob_eval[i]), float(short_prob_eval[i]))
+            conf_lb = max(0.0, max_side - conformal_hw) if max_side > 0 else 0.0
+
+            decision = route_one_bar(
+                cands,
+                base_wr_predictor=_base_wr_predictor_factory(i),
+                htf_agreement=htf_agreement,
+                model_confidence=model_conf,
+                recent_similar_wr=None,
+                drift_score=0.0,
+                cross_asset_divergence=xa_div,
+                conformal_lower_bound=conf_lb,
+            )
+            router_adjusted_wr[i] = decision.adjusted_wr
+            router_sizing[i] = decision.sizing_factor
+
+            if decision.trade and decision.setup_id is not None:
+                setup_ids_per_bar[i] = decision.setup_id
+                router_directions[i] = decision.direction
+            else:
+                reason = decision.abstain_reason or "unknown"
+                abstain_reasons[reason] = abstain_reasons.get(reason, 0) + 1
+
+        # Router diagnostics
+        n_trade = sum(1 for s in setup_ids_per_bar if s is not None)
+        print(f"  router decisions: trade={n_trade}/{n_eval} "
+              f"({100.0*n_trade/max(n_eval,1):.2f}%)")
+        if abstain_reasons:
+            print("  abstain reasons:")
+            for reason, count in sorted(abstain_reasons.items(), key=lambda x: -x[1]):
+                print(f"    {reason}: {count}")
 
         # Compute setup-aware barriers
         atr_at_val = np.maximum(
