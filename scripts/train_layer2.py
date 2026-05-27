@@ -119,6 +119,25 @@ def main():
         "mfe_short": l1["val_preds_mfe_short"][sort_order],
         "mae_short": l1["val_preds_mae_short"][sort_order],
     }
+    # C-tier predictive heads — added 2026-05-27 to close the Disconnection #1
+    # gap (audit). Without these, L2's MLP can't see the magnitude/path/clearance
+    # forecasts the predictive pivot exists to deliver. Optional — the older
+    # checkpoints may not have these in their npz files.
+    if "val_preds_return_H15" in l1:
+        l1_outputs["return_H15_pred"] = l1["val_preds_return_H15"][sort_order]
+    if "val_preds_return_H60" in l1:
+        l1_outputs["return_H60_pred"] = l1["val_preds_return_H60"][sort_order]
+    if "val_preds_clears_level_prob" in l1:
+        l1_outputs["clears_level_prob"] = l1["val_preds_clears_level_prob"][sort_order]
+    if "val_preds_inflection_prob" in l1:
+        l1_outputs["inflection_prob"] = l1["val_preds_inflection_prob"][sort_order]
+    if "val_preds_path_shape_probs" in l1:
+        # Shape (N, 3) — slice into per-class probabilities for the tabular L2 input
+        psp = l1["val_preds_path_shape_probs"][sort_order]
+        if psp.ndim == 2 and psp.shape[1] >= 3:
+            l1_outputs["path_shape_p0"] = psp[:, 0]   # continuation
+            l1_outputs["path_shape_p1"] = psp[:, 1]   # revert
+            l1_outputs["path_shape_p2"] = psp[:, 2]   # chop
     # Optional: L1 fusion embedding (192-D per sample) — present if extract was
     # run with --save-embeddings
     l1_embeddings = None

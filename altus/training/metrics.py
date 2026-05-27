@@ -88,6 +88,17 @@ class MetricsBundle:
 
         Used in the FINAL SUMMARY of the sweep to flag pacing-mode failures
         before we squint at PnL.
+
+        Tiers (2026-05-27 audit recommendation — added STRONG tier above PREDICTIVE):
+        - STRONG-PREDICTIVE: ≥3/5 strong bars pass (corr<-0.5, IC>0.06, ps_acc>0.42, clr_auc>0.56)
+        - PREDICTIVE: ≥3/5 marginal bars pass (corr<-0.3, IC>0.03, ps_acc>0.38, clr_auc>0.53)
+        - WEAK: 1-2 marginal bars pass
+        - PACING-LIKE: 0 marginal bars pass
+        - PACING: corr(P_L,P_S) > +0.5 (decisive sign of vol-detector failure mode)
+
+        Why two tiers: an IC of 0.03 on return_H15 OOS is real signal that
+        survives transaction costs at scale, but it's not a "ship to live"
+        bar. STRONG is the "ship" bar; PREDICTIVE is the "promising, iterate".
         """
         if not self.predictive_diag:
             return "INCONCLUSIVE — predictive heads not trained"
@@ -98,26 +109,43 @@ class MetricsBundle:
         ps = d.get("path_shape_accuracy", float("nan"))
         clr = d.get("clears_level_auc", float("nan"))
 
-        # Tell-tale of pacing mode: dir corr is positive (both sides rise/fall together)
+        # Tell-tale of pacing mode: dir corr is positive (both sides co-move on vol)
         if not np.isnan(corr) and corr > 0.5:
             return "PACING — long/short probs co-move (volatility detector)"
-        # Tell-tale of real predictive content
-        good = 0
+
+        # Count diagnostics passing the MARGINAL bar
+        marginal = 0
         if not np.isnan(corr) and corr < -0.3:
-            good += 1
+            marginal += 1
         if not np.isnan(ic15) and ic15 > 0.03:
-            good += 1
+            marginal += 1
         if not np.isnan(ic60) and ic60 > 0.03:
-            good += 1
+            marginal += 1
         if not np.isnan(ps) and ps > 0.38:
-            good += 1
+            marginal += 1
         if not np.isnan(clr) and clr > 0.53:
-            good += 1
-        if good >= 3:
-            return f"PREDICTIVE ({good}/5 diagnostics pass)"
-        if good >= 1:
-            return f"WEAK ({good}/5 diagnostics pass — marginal signal)"
-        return "PACING-LIKE (0/5 diagnostics pass — no clear forward signal)"
+            marginal += 1
+
+        # Count diagnostics passing the STRONG bar
+        strong = 0
+        if not np.isnan(corr) and corr < -0.5:
+            strong += 1
+        if not np.isnan(ic15) and ic15 > 0.06:
+            strong += 1
+        if not np.isnan(ic60) and ic60 > 0.06:
+            strong += 1
+        if not np.isnan(ps) and ps > 0.42:
+            strong += 1
+        if not np.isnan(clr) and clr > 0.56:
+            strong += 1
+
+        if strong >= 3:
+            return f"STRONG-PREDICTIVE ({strong}/5 strong bars + {marginal}/5 marginal — ready for live)"
+        if marginal >= 3:
+            return f"PREDICTIVE ({marginal}/5 marginal — iterate, not ship-ready)"
+        if marginal >= 1:
+            return f"WEAK ({marginal}/5 marginal — borderline signal)"
+        return "PACING-LIKE (0/5 marginal — no forward signal)"
 
     def mean_auc(self) -> float:
         vals = [v for v in self.auc.values() if not np.isnan(v)]

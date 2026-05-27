@@ -187,6 +187,34 @@ def build_structural_features(
     # Two-pass family compute. Pass 1 = base families (most). Pass 2 =
     # aggregator families that need PRIOR_FEATURES (e.g., setup_confluence
     # reads from already-computed setup_X_active columns).
+    #
+    # Silent-degradation safety (2026-05-27 audit): we audit each family's
+    # output for all-NaN or all-zero columns and emit a LOUD warning. Two
+    # known footguns this catches:
+    #   - Kronos cache missing → emits NaN-filled DataFrame (training on NaN)
+    #   - SimMTM cache empty → emits zeros silently (training on zero block)
+    import logging
+    log = logging.getLogger(__name__)
+    degenerate_families: list[tuple[str, list[str]]] = []
+
+    def _audit(name: str, block: pd.DataFrame) -> pd.DataFrame:
+        """Log a warning if all-NaN or all-zero in any column. Returns block unchanged."""
+        bad_cols: list[str] = []
+        for c in block.columns:
+            col = block[c]
+            if col.isna().all():
+                bad_cols.append(f"{c}=ALL-NAN")
+            elif (col.fillna(0) == 0).all():
+                bad_cols.append(f"{c}=ALL-ZERO")
+        if bad_cols:
+            log.warning(
+                "[structural] family %r emitted degenerate columns: %s "
+                "(likely missing cache or upstream data — features will be uninformative)",
+                name, ", ".join(bad_cols),
+            )
+            degenerate_families.append((name, bad_cols))
+        return block
+
     pass_1_blocks: list[pd.DataFrame] = []
     pass_2_families: list[tuple[str, object]] = []
     for name, module in _FAMILY_REGISTRY.items():
@@ -196,9 +224,9 @@ def build_structural_features(
             pass_2_families.append((name, module))
             continue
         if getattr(module, "NEEDS_RAW_1M", False):
-            pass_1_blocks.append(module.compute(df_primary, df_1m=raw_1m))
+            pass_1_blocks.append(_audit(name, module.compute(df_primary, df_1m=raw_1m)))
         else:
-            pass_1_blocks.append(module.compute(df_primary))
+            pass_1_blocks.append(_audit(name, module.compute(df_primary)))
 
     if pass_1_blocks:
         X_pass1 = pd.concat(pass_1_blocks, axis=1)
@@ -215,9 +243,18 @@ def build_structural_features(
         enriched = pd.concat([df_primary, X_pass1], axis=1)
         for name, module in pass_2_families:
             if getattr(module, "NEEDS_RAW_1M", False):
-                pass_2_blocks.append(module.compute(enriched, df_1m=raw_1m))
+                pass_2_blocks.append(_audit(name, module.compute(enriched, df_1m=raw_1m)))
             else:
-                pass_2_blocks.append(module.compute(enriched))
+                pass_2_blocks.append(_audit(name, module.compute(enriched)))
+
+    # Surface the audit count in a single banner line so it shows up in any
+    # sweep log even if the WARN-level handler isn't enabled.
+    if degenerate_families:
+        print(
+            f"  [structural-audit] WARNING: {len(degenerate_families)} families "
+            f"emitted degenerate columns: "
+            f"{[name for name, _ in degenerate_families]}"
+        )
 
     all_blocks = pass_1_blocks + pass_2_blocks
     X = pd.concat(all_blocks, axis=1) if all_blocks else pd.DataFrame(index=df_primary.index)

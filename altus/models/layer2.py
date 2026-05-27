@@ -71,6 +71,18 @@ LAYER2_INPUT_FEATURES = (
     "l1_mae_long",
     "l1_mfe_short",
     "l1_mae_short",
+    # --- C-tier predictive head outputs (2026-05-27 — fixes audit Disconnection #1) ---
+    # Without these, the magnitude/path/clearance forecasts the predictive pivot
+    # exists to deliver are trained but never reach the trade decision. They were
+    # already extracted in _predict, used by the predictive-vs-pacing diagnostics,
+    # and saved into the val_preds.npz — just not wired through to L2 input.
+    "l1_return_H15_pred",
+    "l1_return_H60_pred",
+    "l1_path_shape_p0",         # continuation prob
+    "l1_path_shape_p1",         # revert prob
+    "l1_path_shape_p2",         # chop prob
+    "l1_clears_level_prob",     # P(price clears ≥1 ATR forward)
+    "l1_inflection_prob",       # P(price resolves against recent direction)
     # --- Derived from L1 outputs ---
     "derived_direction",       # +1 long, -1 short
     "derived_strength",        # max(P_long, P_short)
@@ -235,6 +247,7 @@ def build_layer2_input(
             np.asarray(layer1_outputs[key], dtype=np.float32)
         )
     # Fix the naming: l1_long_tp_prob, l1_short_tp_prob, l1_mfe_long, etc.
+    n_rows = len(index)
     data = {
         "l1_long_tp_prob": np.asarray(layer1_outputs["long_tp_prob"], dtype=np.float32),
         "l1_short_tp_prob": np.asarray(layer1_outputs["short_tp_prob"], dtype=np.float32),
@@ -245,6 +258,24 @@ def build_layer2_input(
         **derived,
         **time_feats,
     }
+    # C-tier predictive head outputs — fixes audit Disconnection #1 (2026-05-27).
+    # These are optional (older checkpoints may lack them); fall back to neutral
+    # zero (regression) or 1/3 (path_shape softmax) when absent so L2 train
+    # doesn't crash on legacy npz files.
+    ctier_map = {
+        "l1_return_H15_pred": ("return_H15_pred", 0.0),
+        "l1_return_H60_pred": ("return_H60_pred", 0.0),
+        "l1_path_shape_p0":   ("path_shape_p0",   1.0 / 3.0),
+        "l1_path_shape_p1":   ("path_shape_p1",   1.0 / 3.0),
+        "l1_path_shape_p2":   ("path_shape_p2",   1.0 / 3.0),
+        "l1_clears_level_prob": ("clears_level_prob", 0.5),
+        "l1_inflection_prob": ("inflection_prob", 0.5),
+    }
+    for l2_col, (l1_key, default) in ctier_map.items():
+        if l1_key in layer1_outputs:
+            data[l2_col] = np.asarray(layer1_outputs[l1_key], dtype=np.float32)
+        else:
+            data[l2_col] = np.full(n_rows, default, dtype=np.float32)
     df = pd.DataFrame(data, index=index)
 
     # Join structural features (vol, trend, anomaly). The structural matrix is

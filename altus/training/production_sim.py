@@ -477,7 +477,24 @@ def simulate_l3(
 
     # Volatility circuit breaker state
     vol_cb_locked_until: pd.Timestamp | None = None
-    vol_z_history: list = []   # rolling cache of recent vol z-scores
+    # Pre-compute trailing z-score across ALL bars (not just candidates) so the
+    # rolling window actually fills up. Iteration below is candidates-only;
+    # tracking vol history only on candidates would never reach the 30-sample
+    # threshold under realistic top-percentile grading.
+    vol_z_arr: np.ndarray | None = None
+    if cfg.use_vol_circuit_breaker and isinstance(tp_arr, np.ndarray) and tp_arr.size >= 30:
+        # Causal rolling z-score: mean & std over trailing 60 bars excluding self.
+        # NaN for the first 30 bars (insufficient history).
+        win = 60
+        z_arr = np.full(tp_arr.size, np.nan, dtype=np.float64)
+        for j in range(30, tp_arr.size):
+            lo = max(0, j - win)
+            tail = tp_arr[lo:j]              # strictly past, excludes j
+            mu = float(np.mean(tail))
+            sd = float(np.std(tail))
+            if sd > 1e-9:
+                z_arr[j] = (float(tp_arr[j]) - mu) / sd
+        vol_z_arr = z_arr
 
     # Consecutive-loss tracker. Updated each time a position's exit_ts is
     # crossed by the current candidate's ts (i.e., we "observe" the close).
@@ -586,20 +603,31 @@ def simulate_l3(
                 continue
 
         # Step 3c: extreme vol circuit breaker. Hard rule — when realized
-        # 5-min vol spikes more than threshold z-scores above its rolling
-        # baseline, halt new entries for cooldown_min minutes.
+        # vol spikes more than threshold z-scores above its rolling baseline,
+        # halt new entries for `vol_circuit_breaker_cooldown_min` minutes.
+        # Activation logic added 2026-05-27 (audit Disconnection #3).
+        #
+        # We z-score `tp_points` (which equals 1.5 × ATR_60 under vol-scaled
+        # labels) against its trailing window. ATR is the standard intraday
+        # vol proxy in the literature; using the value the labels themselves
+        # are computed from keeps the threshold definition consistent with
+        # what the model trained on.
+        #
+        # When `tp_points` is missing (legacy fixed-30/30 labels), the
+        # breaker becomes a no-op — fixed barriers have no per-bar vol
+        # signal to react to.
         if cfg.use_vol_circuit_breaker:
             if vol_cb_locked_until is not None and ts < vol_cb_locked_until:
                 n_vol_cb_blocked += 1
                 continue
-            # Note: full vol-z computation requires per-bar OHLCV which we
-            # don't have here (only per-candidate timestamps). Circuit-breaker
-            # is implemented as a tripwire that activates when contiguous
-            # losses are very large within a short window, as a proxy for
-            # the extreme-vol condition. Production live system would compute
-            # actual realized vol from the bar feed.
-            # For now: skip activation. Hook kept for live wiring.
-            pass
+            if vol_z_arr is not None:
+                z = vol_z_arr[i]
+                if not np.isnan(z) and z >= cfg.vol_circuit_breaker_zscore_threshold:
+                    vol_cb_locked_until = ts + pd.Timedelta(
+                        minutes=cfg.vol_circuit_breaker_cooldown_min
+                    )
+                    n_vol_cb_blocked += 1
+                    continue
 
         if take_long[i]:
             side = "long"

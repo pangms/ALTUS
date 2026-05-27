@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from altus.config import EMBARGO_BARS, N_WALK_FORWARD_FOLDS, OOS_LOCKBOX_MONTHS
+from altus.config import EMBARGO_BARS, LABEL_HORIZON_BARS, N_WALK_FORWARD_FOLDS, OOS_LOCKBOX_MONTHS
 
 
 @dataclass
@@ -65,6 +65,17 @@ def purged_walk_forward(
     """
     if not isinstance(timestamps, pd.DatetimeIndex):
         timestamps = pd.DatetimeIndex(timestamps)
+
+    # Embargo invariant: must be ≥ label horizon, else the train tail and val
+    # head can share label-window overlap (forward leak). This is the single
+    # most important guardrail in purged WF — defended explicitly because a
+    # one-character typo in config silently leaks otherwise. Added 2026-05-27
+    # per audit recommendation.
+    assert embargo_bars >= LABEL_HORIZON_BARS, (
+        f"embargo_bars ({embargo_bars}) must be >= LABEL_HORIZON_BARS "
+        f"({LABEL_HORIZON_BARS}). Otherwise train labels at the boundary can "
+        f"contain forward information that leaks into val. Check altus/config.py."
+    )
 
     n = len(timestamps)
     if n < 1000:
