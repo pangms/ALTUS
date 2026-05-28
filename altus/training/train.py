@@ -99,9 +99,9 @@ def _multi_task_loss(
         parts["mse_return_H15"] = float(l_r15.detach())
         parts["mse_return_H60"] = float(l_r60.detach())
 
-    if clears_level_w > 0 and out.clears_level_logit is not None and "clears_1atr" in batch:
+    if clears_level_w > 0 and out.clears_level_logit is not None and "clears_up_first" in batch:
         bce_cl = nn.BCEWithLogitsLoss()
-        cl_tgt = batch["clears_1atr"] * (1 - 2 * label_smoothing) + label_smoothing
+        cl_tgt = batch["clears_up_first"] * (1 - 2 * label_smoothing) + label_smoothing
         l_cl = bce_cl(out.clears_level_logit, cl_tgt)
         total = total + clears_level_w * l_cl
         parts["bce_clears_level"] = float(l_cl.detach())
@@ -173,8 +173,8 @@ def _predict(
                 return_h60_truth_buf.append(batch["return_H60"].numpy())
         if out.clears_level_logit is not None:
             clears_level_buf.append(out.clears_level_prob.cpu().numpy())
-            if "clears_1atr" in batch:
-                clears_truth_buf.append(batch["clears_1atr"].numpy())
+            if "clears_up_first" in batch:
+                clears_truth_buf.append(batch["clears_up_first"].numpy())
         if return_embeddings and out.fusion_embedding is not None:
             emb_buf.append(out.fusion_embedding.cpu().numpy())
     preds = {k: np.concatenate(v) for k, v in preds_buf.items()}
@@ -197,7 +197,7 @@ def _predict(
     if clears_level_buf:
         preds["clears_level_prob"] = np.concatenate(clears_level_buf)
     if clears_truth_buf:
-        truths["clears_1atr"] = np.concatenate(clears_truth_buf)
+        truths["clears_up_first"] = np.concatenate(clears_truth_buf)
     if return_embeddings and emb_buf:
         preds["fusion_embedding"] = np.concatenate(emb_buf, axis=0).astype(np.float32)
     return preds, truths

@@ -104,7 +104,7 @@ class LabelOutput(NamedTuple):
     # Binary: did price extend by ≥ 1 ATR in EITHER direction within H bars?
     # Generic level-clearance proxy used by C4 head. The setup-aware
     # interpretation happens at feature time (setups know WHICH level matters).
-    clears_1atr: np.ndarray       # int8, {0, 1}
+    clears_up_first: np.ndarray   # int8, {0,1} — 1 = price cleared +K ATR before -K ATR (directional)
 
 
 def triple_barrier_labels(
@@ -253,13 +253,29 @@ def triple_barrier_labels(
                     # Fallback: closest to either continuation or chop based on magnitude
                     np.where(abs_terminal >= 0.3, 0, 2)))).astype(np.int8)
 
-    # Generic level-clearance: did the H-bar excursion exceed 5 ATR in either
-    # direction? Threshold tuned for ~50/50 base rate under vol-scaled barriers
-    # over a 60-bar horizon. MNQ's 60-bar windows commonly have 2-3 ATR moves;
-    # 5 ATR catches "big-move bars" where setups had real follow-through. At
-    # 1.0 ATR: 100% (useless). At 3.0: 90%. At 5.0: closer to 50/50.
-    # (Field tunable post-sweep based on actual base rate from training data.)
-    clears_1atr = ((max_up_atr >= 5.0) | (max_down_atr >= 5.0)).astype(np.int8)
+    # Directional level-clearance (2026-05-27 — fixes the audit finding that the
+    # old `clears_1atr = (up>=5ATR) | (down>=5ATR)` was a SYMMETRIC volatility
+    # detector with no directional content. A head trained on it passes a
+    # clears_AUC>0.53 diagnostic purely because vol is autocorrelated, masking
+    # the pacing-mode failure the pivot exists to kill.)
+    #
+    # New target: FIRST-PASSAGE direction. Did price clear +K ATR (a "nearest
+    # level" distance) BEFORE it cleared -K ATR, within the H-bar window?
+    #   clears_up_first = 1  → upward break came first (good for a LONG setup)
+    #   clears_up_first = 0  → downward break came first, or neither (good for SHORT)
+    # This is genuinely directional: a long setup wants P(up_first) high, a short
+    # setup wants it low. It is NOT a vol detector — a high-vol bar that whipsaws
+    # symmetrically splits ~50/50 on which side it hits first.
+    K_CLEAR_ATR = 1.5   # "nearest level" scale — ~1.5 ATR is a typical S/R distance
+    up_thr = (entry + K_CLEAR_ATR * atr_safe)[:, None]    # (n, 1)
+    down_thr = (entry - K_CLEAR_ATR * atr_safe)[:, None]
+    up_cross = high_win >= up_thr                          # (n, H) bool
+    down_cross = low_win <= down_thr
+    H_win = high_win.shape[1]
+    # First-crossing bar index per side; H_win+1 sentinel when never crossed.
+    up_first = np.where(up_cross.any(axis=1), up_cross.argmax(axis=1), H_win + 1)
+    down_first = np.where(down_cross.any(axis=1), down_cross.argmax(axis=1), H_win + 1)
+    clears_up_first = (up_first < down_first).astype(np.int8)
 
     # ----- Inflection auxiliary label (Phase H, Q26) ---------------------------
     # Recent direction = sign of open[T] - open[T-K] over K=10 bars.
@@ -305,7 +321,7 @@ def triple_barrier_labels(
         return_H15=return_H15[keep],
         return_H60=return_H60[keep],
         path_shape_class=path_shape[keep],
-        clears_1atr=clears_1atr[keep],
+        clears_up_first=clears_up_first[keep],
     )
 
 
@@ -334,7 +350,7 @@ def filter_labels_to_index(labels: LabelOutput, target_index: pd.DatetimeIndex) 
         return_H15=labels.return_H15[idx],
         return_H60=labels.return_H60[idx],
         path_shape_class=labels.path_shape_class[idx],
-        clears_1atr=labels.clears_1atr[idx],
+        clears_up_first=labels.clears_up_first[idx],
     )
 
 

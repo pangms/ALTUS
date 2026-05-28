@@ -101,7 +101,7 @@ class ALTUSDataset(Dataset):
             "return_H15": torch.tensor(self._labels.return_H15[pos], dtype=torch.float32),
             "return_H60": torch.tensor(self._labels.return_H60[pos], dtype=torch.float32),
             "path_shape_class": torch.tensor(self._labels.path_shape_class[pos], dtype=torch.long),
-            "clears_1atr": torch.tensor(self._labels.clears_1atr[pos], dtype=torch.float32),
+            "clears_up_first": torch.tensor(self._labels.clears_up_first[pos], dtype=torch.float32),
         }
 
 
@@ -119,5 +119,5 @@ def collate(batch: list[dict]) -> dict[str, torch.Tensor]:
         "return_H15": torch.stack([b["return_H15"] for b in batch], dim=0),
         "return_H60": torch.stack([b["return_H60"] for b in batch], dim=0),
         "path_shape_class": torch.stack([b["path_shape_class"] for b in batch], dim=0),
-        "clears_1atr": torch.stack([b["clears_1atr"] for b in batch], dim=0),
+        "clears_up_first": torch.stack([b["clears_up_first"] for b in batch], dim=0),
     }

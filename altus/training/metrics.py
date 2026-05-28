@@ -257,12 +257,12 @@ def evaluate_predictions(
 
     # 4) clears_level binary AUC — > 0.55 means the head learned something
     #    beyond marginal class rate
-    if "clears_level_prob" in preds and "clears_1atr" in truths:
+    if "clears_level_prob" in preds and "clears_up_first" in truths:
         diag["clears_level_auc"] = _safe_auc(
-            np.asarray(truths["clears_1atr"], dtype=np.float64),
+            np.asarray(truths["clears_up_first"], dtype=np.float64),
             np.asarray(preds["clears_level_prob"], dtype=np.float64),
         )
-        diag["clears_level_base_rate"] = float(np.asarray(truths["clears_1atr"]).mean())
+        diag["clears_level_base_rate"] = float(np.asarray(truths["clears_up_first"]).mean())
 
     return MetricsBundle(
         n=n,

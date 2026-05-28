@@ -36,7 +36,10 @@ ANCHORS="pda,vwap,tstruct"
 # Predictive setup library — 8 setups per FRAMEWORK.md A-tier:
 SETUPS="sfs,sfa,sld,orb,svwap,spb,scomp,seod"
 # L2-tier confidence modulators (2026-05-26 — bidirectional boosters):
-MODULATORS="pclear,spool,scnf,cac,vss,tof"
+# shtf added 2026-05-27 — per-setup × HTF agreement (the surfer bridge).
+# Requires both SETUPS + mtf (in PHASE_E) to be present, which variants
+# 05/06 satisfy; degrades to zeros otherwise.
+MODULATORS="pclear,spool,scnf,cac,vss,tof,shtf"
 
 ARTIFACTS_DIR="/workspace/ALTUS/artifacts"
 SUMMARY_FILE="$ARTIFACTS_DIR/sweep_baseline_summary_$(date +%Y%m%d_%H%M%S).txt"

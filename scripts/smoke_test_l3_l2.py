@@ -158,7 +158,7 @@ def main():
         return_H15=labels.return_H15[val_positions],
         return_H60=labels.return_H60[val_positions],
         path_shape_class=labels.path_shape_class[val_positions],
-        clears_1atr=labels.clears_1atr[val_positions],
+        clears_up_first=labels.clears_up_first[val_positions],
     )
 
     # ---- Build L1-only "truths" dict for simulate_l3 (uses REAL labels) ----

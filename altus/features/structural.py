@@ -38,6 +38,7 @@ from altus.features.families import (
     session_time,
     setup_compression,
     setup_confluence,
+    setup_htf_context,
     setup_eod,
     setup_failed_auction,
     setup_failed_sweep,
@@ -118,6 +119,7 @@ _FAMILY_REGISTRY = {
     "pclear":    path_clearance,             # 6 feats — clearance + obstacle strength per side
     "spool":     stop_pool,                  # 5 feats — stop pool size + trigger proximity
     "scnf":      setup_confluence,           # 4 feats — multi-setup direction counts
+    "shtf":      setup_htf_context,          # 12 feats — per-setup × HTF agreement (surfer bridge)
     "cac":       cross_asset_setup_confirm,  # 4 feats — NQ/ES alignment
     "vss":       vol_sweet_spot,             # 9 feats — per-setup vol regime fitness
     "tof":       time_of_day_fitness,        # 9 feats — per-setup time window fitness

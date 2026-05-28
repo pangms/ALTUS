@@ -175,6 +175,14 @@ LAYER2_INPUT_FEATURES = (
     # seod — EOD reversion (A7)
     "seod_active", "seod_strength", "seod_direction",
     "seod_band_position", "seod_mins_until_close",
+    # --- Surfer bridge: per-setup × HTF agreement (2026-05-27 audit fix) ---
+    # Engineers the setup×higher-timeframe interaction into the signal so L2
+    # sees "ORB-long, 4h-aligned +0.6" instead of a timeframe-naked setup.
+    # The thing the surfer principle is actually about.
+    "sfs_htf_agree", "sfa_htf_agree", "sld_htf_agree", "orb_htf_agree",
+    "svwap_htf_agree", "spb_htf_agree", "scomp_htf_agree", "seod_htf_agree",
+    "shtf_primary_agree", "shtf_primary_60m",
+    "shtf_aligned_count", "shtf_opposed_count",
 )
 
 

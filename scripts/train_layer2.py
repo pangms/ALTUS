@@ -166,7 +166,7 @@ def main():
         return_H15=labels.return_H15[val_positions],
         return_H60=labels.return_H60[val_positions],
         path_shape_class=labels.path_shape_class[val_positions],
-        clears_1atr=labels.clears_1atr[val_positions],
+        clears_up_first=labels.clears_up_first[val_positions],
     )
 
     # ---- Select Layer 1 candidates ----------------------------------------
@@ -439,7 +439,16 @@ def main():
                 continue
 
             # Build modulator context from L2-input feature columns.
-            htf_agreement = float(row.get("trend_alignment", 0.0) or 0.0)
+            # HTF agreement (the surfer-bridge nudge): prefer the setup-DIRECTIONAL
+            # agreement (primary setup's direction × multi-TF swell) from the
+            # setup_htf_context family. This is the audit fix — the old generic
+            # `trend_alignment` scalar wasn't setup-aware, so a counter-trend
+            # setup got the same nudge as an aligned one. Fall back to the
+            # generic scalar for variants that don't include the surfer bridge.
+            if "shtf_primary_agree" in row.index:
+                htf_agreement = float(row.get("shtf_primary_agree", 0.0) or 0.0)
+            else:
+                htf_agreement = float(row.get("trend_alignment", 0.0) or 0.0)
             # Model confidence: 1 - normalized 3-class entropy proxy.
             ent = float(row.get("derived_entropy", 0.0) or 0.0)
             model_conf = float(np.clip(1.0 - (ent / math.log(3.0)), 0.0, 1.0)) if ent > 0 else 0.7
