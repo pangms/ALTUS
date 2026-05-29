@@ -375,13 +375,46 @@ def main():
                 strength_col = f"{setup_id}_strength"
                 dir_col = f"{setup_id}_direction"
                 if active_col in row.index and float(row[active_col]) >= 0.5:
+                    # Live context fitness = vss × tof for this setup (audit fix #4).
+                    # Lets arbitration prefer the setup that fits the current vol
+                    # regime + time-of-day, not just the highest frozen prior.
+                    vss = float(row.get(f"vss_match_{setup_id}", 1.0) or 1.0)
+                    tof = float(row.get(f"tof_fit_{setup_id}", 1.0) or 1.0)
+                    fitness = max(0.05, vss * tof) if (vss > 0 or tof > 0) else 1.0
                     cands.append(SetupCandidate(
                         setup_id=setup_id,
                         active=float(row[active_col]),
                         strength=float(row.get(strength_col, 0.5)),
                         direction=int(round(float(row.get(dir_col, 0)))),
+                        context_fitness=fitness,
                     ))
             return cands
+
+        def _path_quality(row, direction: int) -> float:
+            """Path-cleanliness scalar ∈ [0,1] (audit fix #2): is the road to TP
+            open in the trade's direction? Combines clearance (room) and obstacle
+            strength (a wall) from the path_clearance family. 1.0 = clean runway,
+            0.0 = walled in. Returns 1.0 (neutral) when the features are absent."""
+            if direction > 0:
+                clear = float(row.get("pc_clearance_above_atr", np.nan))
+                obstacle = float(row.get("pc_obstacle_above_strength", np.nan))
+            elif direction < 0:
+                clear = float(row.get("pc_clearance_below_atr", np.nan))
+                obstacle = float(row.get("pc_obstacle_below_strength", np.nan))
+            else:
+                return 1.0
+            if np.isnan(clear) and np.isnan(obstacle):
+                return 1.0   # path_clearance family not in this variant → neutral
+            clear = 0.0 if np.isnan(clear) else clear
+            obstacle = 0.0 if np.isnan(obstacle) else obstacle
+            # Clearance ≥ 1.5 ATR = full runway; a strong near obstacle drags it down.
+            clearance_q = float(np.clip(clear / 1.5, 0.0, 1.0))
+            obstacle_pen = float(np.clip(obstacle, 0.0, 1.0))
+            return float(np.clip(clearance_q * (1.0 - 0.6 * obstacle_pen), 0.0, 1.0))
+
+        # Path-quality floor: below this the road to target is too contested to
+        # take the trade at all. Above it, sizing scales with path quality.
+        PATH_QUALITY_FLOOR = 0.25
 
         # Per-bar setup_id (primary winner from FULL router cascade) — None
         # when no setup OR when the router abstains (modulator-shrunk WR below
@@ -469,9 +502,23 @@ def main():
             ent = float(row.get("derived_entropy", 0.0) or 0.0)
             model_conf = float(np.clip(1.0 - (ent / math.log(3.0)), 0.0, 1.0)) if ent > 0 else 0.7
             xa_div = bool(int(round(float(row.get("cac_divergence_active", 0.0) or 0.0))))
-            # Conformal LB at this bar — approximate with max-side prob - hw
+            # Conformal lower bound, confidence-normalized (audit fix #6 — light).
+            # The plain split-conformal half-width (conformal_hw) is constant for
+            # all bars, so it can't abstain selectively on genuinely uncertain
+            # ones. We scale the nonconformity by a per-bar difficulty proxy —
+            # the 3-class model confidence — so the interval WIDENS on uncertain
+            # bars (factor 1.0 at full confidence → up to 2.0 at zero), making
+            # the gate harder to clear exactly where the model is unsure. This is
+            # a normalized-conformal approximation; true Mondrian/normalized
+            # conformal (per-setup calibration) is a deferred refinement.
             max_side = max(float(long_prob_eval[i]), float(short_prob_eval[i]))
-            conf_lb = max(0.0, max_side - conformal_hw) if max_side > 0 else 0.0
+            conf_width = conformal_hw * (2.0 - float(np.clip(model_conf, 0.0, 1.0)))
+            conf_lb = max(0.0, max_side - conf_width) if max_side > 0 else 0.0
+
+            # L1 directional read for the veto (audit fix #5): which way does the
+            # 3-class softmax lean, and how convicted? max-side prob is conviction.
+            l1_dir = 1 if lp_i >= sp_i else -1
+            l1_conv = max(lp_i, sp_i)
 
             decision = route_one_bar(
                 cands,
@@ -483,22 +530,30 @@ def main():
                 cross_asset_divergence=xa_div,
                 conformal_lower_bound=conf_lb,
                 no_setup_direction=no_setup_dir,
+                l1_direction=l1_dir,
+                l1_conviction=l1_conv,
             )
             router_adjusted_wr[i] = decision.adjusted_wr
 
             if decision.trade and decision.direction != 0:
+                # Path-cleanliness gate (audit fix #2): is the road to TP open?
+                pq = _path_quality(row, decision.direction)
+                if pq < PATH_QUALITY_FLOOR:
+                    abstain_reasons["path_walled_in"] = abstain_reasons.get("path_walled_in", 0) + 1
+                    continue
                 # Keystone: record the gate + direction + size that the SIM will
                 # execute. Both named-setup trades AND no-setup waves count.
+                # Size scales with path quality — clean runway = full size,
+                # contested-but-passable path = reduced size.
                 router_trade_gate[i] = True
                 router_directions[i] = decision.direction
                 if decision.setup_id is not None:
                     setup_ids_per_bar[i] = decision.setup_id   # → setup-aware barriers
-                    # Down-size the no-setup wave relative to a named setup.
-                    router_sizing[i] = decision.sizing_factor
+                    router_sizing[i] = decision.sizing_factor * pq
                 else:
                     n_no_setup_waves += 1
                     # No-setup waves trade smaller (no template confirmation).
-                    router_sizing[i] = decision.sizing_factor * 0.5
+                    router_sizing[i] = decision.sizing_factor * 0.5 * pq
             else:
                 reason = decision.abstain_reason or "unknown"
                 abstain_reasons[reason] = abstain_reasons.get(reason, 0) + 1

@@ -70,6 +70,11 @@ class SetupCandidate:
     active: float
     strength: float
     direction: int
+    # Live context fitness ∈ [0, ~1.5] — product of per-setup vol-sweet-spot and
+    # time-of-day fitness (vss_match × tof_fit). 1.0 = neutral. Lets arbitration
+    # resolve contests by BASELINE_WR × fitness instead of frozen priors, so a
+    # continuation setup can beat a reversal on a trending day (audit fix #4).
+    context_fitness: float = 1.0
 
 
 @dataclass
@@ -82,6 +87,19 @@ class RouterDecision:
     abstain_reason: str | None = None
 
 
+def _effective_wr(c: SetupCandidate) -> float:
+    """Context-aware effective WR for arbitration: frozen literature prior
+    scaled by live context fitness (vss × tof). This is what removes the quiet
+    reversal-bias — on a trend day a continuation setup with high fitness can
+    out-rank a reversal setup whose static prior is higher (audit fix #4)."""
+    return BASELINE_WR.get(c.setup_id, 0.5) * max(c.context_fitness, 1e-6)
+
+
+def _pick_by_effective_wr(cands: list[SetupCandidate]) -> str:
+    """Pick the setup with the highest context-aware effective WR."""
+    return max(cands, key=_effective_wr).setup_id
+
+
 def arbitrate_setups(
     candidates: list[SetupCandidate],
     min_strength: float = 0.5,
@@ -89,13 +107,13 @@ def arbitrate_setups(
 ) -> tuple[str | None, str | None]:
     """Stage 1 — given active setups, pick the primary one or abstain.
 
-    Rules (from SETUPS.md Section 10):
+    Rules (from SETUPS.md Section 10), now context-aware (audit fix #4):
       - Filter to setups with strength >= min_strength
       - If 0 setups: return (None, "no_setup_active")
       - If 1 setup: return (setup_id, None)
-      - If 2+ setups SAME DIRECTION: pick highest-priority setup (highest WR),
+      - If 2+ setups SAME DIRECTION: pick highest EFFECTIVE WR (prior × fitness),
         return (setup_id, None) — confidence-stacked
-      - If 2+ setups OPPOSITE DIRECTIONS: check WR gap.
+      - If 2+ setups OPPOSITE DIRECTIONS: check effective-WR gap.
           - If gap >= wr_gap_to_pick_winner: pick winner
           - If gap < threshold: abstain (genuine ambiguity)
     """
@@ -109,22 +127,35 @@ def arbitrate_setups(
     longs = [c for c in qualified if c.direction > 0]
     shorts = [c for c in qualified if c.direction < 0]
 
-    # All same direction → pick the highest-priority (= highest baseline WR)
+    # All same direction → pick highest EFFECTIVE WR (context-aware, not frozen)
     if not longs:
-        return _pick_by_priority(shorts), None
+        return _pick_by_effective_wr(shorts), None
     if not shorts:
-        return _pick_by_priority(longs), None
+        return _pick_by_effective_wr(longs), None
 
-    # Conflict: opposite directions both firing
-    best_long = _pick_by_priority(longs)
-    best_short = _pick_by_priority(shorts)
-    wr_long = BASELINE_WR.get(best_long, 0.5)
-    wr_short = BASELINE_WR.get(best_short, 0.5)
+    # Conflict: opposite directions both firing — resolve by effective WR
+    best_long_c = max(longs, key=_effective_wr)
+    best_short_c = max(shorts, key=_effective_wr)
+    wr_long = _effective_wr(best_long_c)
+    wr_short = _effective_wr(best_short_c)
     if abs(wr_long - wr_short) < wr_gap_to_pick_winner:
         return None, "setup_conflict_ambiguous"
     if wr_long > wr_short:
-        return best_long, None
-    return best_short, None
+        return best_long_c.setup_id, None
+    return best_short_c.setup_id, None
+
+
+def same_direction_confluence(candidates: list[SetupCandidate], direction: int,
+                              min_strength: float = 0.5) -> int:
+    """Count qualified setups agreeing with `direction` — the confluence signal.
+    When ≥2 setups agree, that's the highest-conviction case (SETUPS.md §10);
+    route_one_bar uses this for a WR/size bonus instead of discarding the
+    confirmation (audit fix #4)."""
+    return sum(
+        1 for c in candidates
+        if c.active >= 0.5 and c.strength >= min_strength
+        and ((direction > 0 and c.direction > 0) or (direction < 0 and c.direction < 0))
+    )
 
 
 def _pick_by_priority(cands: list[SetupCandidate]) -> str:
@@ -234,6 +265,8 @@ def route_one_bar(
     cross_asset_divergence: bool = False,
     conformal_lower_bound: float = 0.0,
     no_setup_direction: int = 0,
+    l1_direction: int = 0,
+    l1_conviction: float = 0.0,
 ) -> RouterDecision:
     """End-to-end: Stage 1 → Stage 2 → Stage 3 → Stage 4 for a single bar.
 
@@ -295,6 +328,29 @@ def route_one_bar(
         drift_score=drift_score,
         cross_asset_divergence=cross_asset_divergence,
     )
+
+    # Same-direction confluence bonus (audit fix #4): when ≥2 setups agree on
+    # direction, that's the highest-conviction case — don't discard the
+    # confirmation, reward it. +2pp per extra agreeing setup, capped +4pp.
+    if primary_setup is not None and direction != 0:
+        n_agree = same_direction_confluence(setup_candidates, direction)
+        if n_agree >= 2:
+            adjusted_wr = min(1.0, adjusted_wr + 0.02 * min(n_agree - 1, 2))
+
+    # L1 direction veto/shrink (audit fix #5): the setup template dictates
+    # direction, but if L1's own 3-class forecast strongly DISAGREES, the model
+    # is reading price action the setup is ignoring. Shrink hard (or abstain) so
+    # the template can't override a confident contrary model read.
+    if direction != 0 and l1_direction != 0 and l1_direction != direction:
+        if l1_conviction >= 0.65:
+            # Strong contrary conviction → stand aside.
+            return gate_decision(
+                base_wr=adjusted_wr, setup_id=primary_setup, direction=direction,
+                sizing_factor=0.0, abstain_reason="l1_direction_veto",
+                conformal_lower_bound=conformal_lower_bound,
+            )
+        # Mild disagreement → penalize WR (shrinks size downstream).
+        adjusted_wr = max(0.0, adjusted_wr - 0.03)
 
     # Compute sizing factor from WR + confidence (B1 × G1)
     # sizing_factor = (adjusted_wr - breakeven) / (max_wr - breakeven), clipped
