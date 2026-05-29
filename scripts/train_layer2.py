@@ -395,6 +395,12 @@ def main():
         router_directions = np.zeros(n_eval, dtype=np.int8)
         router_adjusted_wr = np.zeros(n_eval, dtype=np.float32)
         router_sizing = np.zeros(n_eval, dtype=np.float32)
+        router_trade_gate = np.zeros(n_eval, dtype=bool)   # keystone: drives the sim
+        n_no_setup_waves = 0
+        # L1-conviction floor for the no-setup wave: only ride an unnamed move
+        # when the model is meaningfully one-sided. 0.55 ≈ "clearly above the
+        # 0.51 breakeven with margin." Tunable in the pass-2 path-cleanliness work.
+        NO_SETUP_CONVICTION_FLOOR = 0.55
         abstain_reasons: dict[str, int] = {}
 
         # Conformal half-width — read directly from the calibrated gate's
@@ -435,8 +441,18 @@ def main():
             if row is None or row.isna().all():
                 continue
             cands = _setup_candidates_for_bar(row)
+            # No-setup wave (revived 2026-05-27): when NO template fires but L1
+            # has strong directional conviction, let the bar ride the clean move
+            # on its merits. Derived from the 3-class direction softmax slices.
+            lp_i = float(long_prob_eval[i])
+            sp_i = float(short_prob_eval[i])
+            no_setup_dir = 0
             if not cands:
-                continue
+                conviction = max(lp_i, sp_i)
+                if conviction >= NO_SETUP_CONVICTION_FLOOR:
+                    no_setup_dir = 1 if lp_i >= sp_i else -1
+                else:
+                    continue   # no template AND no conviction → nothing to ride
 
             # Build modulator context from L2-input feature columns.
             # HTF agreement (the surfer-bridge nudge): prefer the setup-DIRECTIONAL
@@ -466,21 +482,34 @@ def main():
                 drift_score=0.0,
                 cross_asset_divergence=xa_div,
                 conformal_lower_bound=conf_lb,
+                no_setup_direction=no_setup_dir,
             )
             router_adjusted_wr[i] = decision.adjusted_wr
-            router_sizing[i] = decision.sizing_factor
 
-            if decision.trade and decision.setup_id is not None:
-                setup_ids_per_bar[i] = decision.setup_id
+            if decision.trade and decision.direction != 0:
+                # Keystone: record the gate + direction + size that the SIM will
+                # execute. Both named-setup trades AND no-setup waves count.
+                router_trade_gate[i] = True
                 router_directions[i] = decision.direction
+                if decision.setup_id is not None:
+                    setup_ids_per_bar[i] = decision.setup_id   # → setup-aware barriers
+                    # Down-size the no-setup wave relative to a named setup.
+                    router_sizing[i] = decision.sizing_factor
+                else:
+                    n_no_setup_waves += 1
+                    # No-setup waves trade smaller (no template confirmation).
+                    router_sizing[i] = decision.sizing_factor * 0.5
             else:
                 reason = decision.abstain_reason or "unknown"
                 abstain_reasons[reason] = abstain_reasons.get(reason, 0) + 1
 
-        # Router diagnostics
-        n_trade = sum(1 for s in setup_ids_per_bar if s is not None)
+        # Router diagnostics — n_trade now counts the FULL gate (named setups +
+        # no-setup waves), which is exactly what the sim will execute.
+        n_trade = int(router_trade_gate.sum())
+        n_named = sum(1 for s in setup_ids_per_bar if s is not None)
         print(f"  router decisions: trade={n_trade}/{n_eval} "
-              f"({100.0*n_trade/max(n_eval,1):.2f}%)")
+              f"({100.0*n_trade/max(n_eval,1):.2f}%)  "
+              f"[named-setup={n_named}, no-setup-wave={n_no_setup_waves}]")
         if abstain_reasons:
             print("  abstain reasons:")
             for reason, count in sorted(abstain_reasons.items(), key=lambda x: -x[1]):
@@ -508,16 +537,24 @@ def main():
         truths_setup_aware["tp_points"] = tp_eff
         truths_setup_aware["sl_points"] = sl_eff
 
+        # KEYSTONE: the sim now EXECUTES the router's decisions (gate/direction/
+        # sizing) rather than re-deriving trades from probability percentiles.
+        # This makes the conformal gate, breakeven floor, modulators, arbitration
+        # and the no-setup wave the actual driver of P&L. preds are still passed
+        # (for the legacy code path) but entry_gate overrides candidate selection.
         l3_setup = simulate_l3(
             labels_val.index[eval_mask].values,
             {"long_tp_prob": long_prob_l2[eval_mask],
              "short_tp_prob": short_prob_l2[eval_mask]},
             truths_setup_aware,
             cfg=cfg,
+            entry_gate=router_trade_gate,
+            entry_direction=router_directions,
+            entry_sizing=router_sizing,
         )
         print(f"  {l3_setup.summary_line()}")
-        n_setup_trades = sum(1 for s in setup_ids_per_bar if s is not None)
-        print(f"  bars with active setup: {n_setup_trades:,} / {n_eval:,}")
+        print(f"  [router-executed] sim trades={l3_setup.n_trades} should match "
+              f"router gate={int(router_trade_gate.sum())} minus hard-rule blocks")
 
         # ---- Bootstrap setup-performance tracker from this run's outcomes ----
         # For each bar that had an active setup, compute the realized R-multiple

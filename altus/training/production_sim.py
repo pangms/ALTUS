@@ -380,11 +380,30 @@ def _cooldown_min_for(n_consec_losses: int, schedule: tuple) -> int:
 # Main simulation
 # ---------------------------------------------------------------------------
 
+def _grade_from_sizing(sizing_factor: float) -> int:
+    """Map a router sizing_factor ∈ [0,1] to a discrete contract grade.
+
+    Caps at A+ (no A++ from the router → no auto-pyramiding; pyramiding is a
+    deferred open-profit-gated concern). Used only in router-executor mode.
+    """
+    if sizing_factor >= 0.75:
+        return GRADE_A_PLUS
+    if sizing_factor >= 0.50:
+        return GRADE_A
+    if sizing_factor > 0.0:
+        return GRADE_B
+    return GRADE_NONE
+
+
 def simulate_l3(
     timestamps: np.ndarray,
     preds: dict[str, np.ndarray],
     truths: dict[str, np.ndarray],
     cfg: L3Config | None = None,
+    *,
+    entry_gate: np.ndarray | None = None,
+    entry_direction: np.ndarray | None = None,
+    entry_sizing: np.ndarray | None = None,
 ) -> L3Result:
     """Run L3.1 execution rules over per-bar signals.
 
@@ -395,6 +414,20 @@ def simulate_l3(
     preds      : dict with 'long_tp_prob', 'short_tp_prob'.
     truths     : dict with 'long_tp', 'short_tp', 'mfe_long', 'mae_long',
                  'mfe_short', 'mae_short' (same contract as sim_pnl.py).
+
+    Router-executor mode (2026-05-27 — fixes the keystone audit finding that the
+    rigorous L2 router wasn't in the execution path):
+    entry_gate      : optional bool array aligned to timestamps. When provided,
+                      the sim trades EXACTLY the bars where this is True, using
+                      `entry_direction` for side and `entry_sizing` for contract
+                      grade — instead of re-deriving candidates from probability
+                      percentiles. This makes the router's trade/abstain/size
+                      decision (conformal gate, breakeven floor, modulators,
+                      arbitration) the actual driver of P&L.
+    entry_direction : optional int/float array (+1 long, -1 short, 0 none).
+    entry_sizing    : optional float array ∈ [0,1] router sizing_factor → grade.
+    When entry_gate is None, falls back to the legacy probability-grade executor
+    (still used by the L1 sweep's per-variant _run_l3_sim, which has no router).
     """
     cfg = cfg or L3Config()
     n = len(timestamps)
@@ -451,6 +484,25 @@ def simulate_l3(
     take_long = (has_long & ~has_short) | long_higher | long_wins_tie
     take_short = (has_short & ~has_long) | short_higher | short_wins_tie
     cand_mask = take_long | take_short
+
+    # ---- Router-executor override (keystone fix) -----------------------------
+    # When the caller passes a per-bar router decision, IT — not the probability
+    # grades above — decides which bars trade, on which side, at what size. This
+    # is what makes the L2 router's conformal gate / breakeven floor / modulators
+    # / arbitration the actual driver of P&L instead of decoration.
+    if entry_gate is not None:
+        gate = np.asarray(entry_gate, dtype=bool)[sort_order]
+        edir = np.asarray(entry_direction, dtype=np.float64)[sort_order] \
+            if entry_direction is not None else np.zeros(n, dtype=np.float64)
+        esize = np.asarray(entry_sizing, dtype=np.float64)[sort_order] \
+            if entry_sizing is not None else np.ones(n, dtype=np.float64)
+        take_long = gate & (edir > 0)
+        take_short = gate & (edir < 0)
+        cand_mask = take_long | take_short
+        # Router sizing_factor → discrete grade, per side.
+        router_grade = np.array([_grade_from_sizing(float(s)) for s in esize], dtype=np.int64)
+        long_grade = np.where(take_long, router_grade, 0)
+        short_grade = np.where(take_short, router_grade, 0)
 
     cand_indices = np.where(cand_mask)[0]
     if cand_indices.size == 0:

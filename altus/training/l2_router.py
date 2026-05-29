@@ -233,6 +233,7 @@ def route_one_bar(
     drift_score: float = 0.0,
     cross_asset_divergence: bool = False,
     conformal_lower_bound: float = 0.0,
+    no_setup_direction: int = 0,
 ) -> RouterDecision:
     """End-to-end: Stage 1 → Stage 2 → Stage 3 → Stage 4 for a single bar.
 
@@ -240,14 +241,30 @@ def route_one_bar(
     to return a setup-conditional WR estimate). Receives setup_id and context;
     returns float in [0, 1]. When called with setup_id=None for no-setup
     fallback mode, uses a conservative WR estimate.
+
+    `no_setup_direction` (2026-05-27 — revives the dead "surfer rides any wave"
+    branch): when no setup is active, this is the direction L1's own 3-class
+    forecast wants (+1/-1/0). It lets a bar with strong directional conviction
+    trade an unnamed clean move — sized down via the standard gate/modulator
+    path — instead of being silently dropped because it didn't match a template.
+    The trade is recorded with setup_id=None; the caller treats that as the
+    no-setup wave (default barriers).
     """
     primary_setup, abstain_reason = arbitrate_setups(setup_candidates)
 
     if primary_setup is None:
         # Either no setup active OR ambiguous conflict
         if abstain_reason == "no_setup_active":
-            # No-setup fallback: only proceed if L1-only confidence is very high.
-            # Conservative — keep base_wr low so the gate likely rejects.
+            # No-setup fallback: ride a clean directional move on L1 conviction.
+            # Only proceeds if base_wr clears the same breakeven + conformal bars
+            # every setup faces, so it's gated, not a free-for-all.
+            if no_setup_direction == 0:
+                # No directional conviction either → genuinely nothing to do.
+                return gate_decision(
+                    base_wr=0.0, setup_id=None, direction=0,
+                    sizing_factor=0.0, abstain_reason="no_setup_no_conviction",
+                    conformal_lower_bound=0.0,
+                )
             base_wr = base_wr_predictor(None, {})
         else:
             return gate_decision(
@@ -260,8 +277,9 @@ def route_one_bar(
             "candidates": setup_candidates,
         })
 
-    # Determine direction for the primary setup
-    direction = 0
+    # Determine direction. For a named setup, the setup dictates it. For the
+    # no-setup wave, use L1's directional conviction.
+    direction = no_setup_direction if primary_setup is None else 0
     if primary_setup is not None:
         for c in setup_candidates:
             if c.setup_id == primary_setup:
