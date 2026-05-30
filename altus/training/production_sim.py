@@ -636,9 +636,13 @@ def simulate_l3(
         # Resume when above release_pct.
         if cfg.use_daily_loss_safety:
             date_key = pd.Timestamp(ts).normalize().isoformat()
-            if date_key not in daily_pnl_running:
-                daily_pnl_running[date_key] = 0.0
-                daily_loss_safety_locked[date_key] = False
+            # Init each dict INDEPENDENTLY: _close_position writes daily_pnl_running
+            # for exit dates, so a date can exist there without a lock entry. The
+            # old `if date_key not in daily_pnl_running` guard initialized both
+            # together and KeyError'd on daily_loss_safety_locked when an exit had
+            # seeded daily_pnl_running first. (Fix 2026-05-30.)
+            daily_pnl_running.setdefault(date_key, 0.0)
+            daily_loss_safety_locked.setdefault(date_key, False)
             cur_daily_pnl = daily_pnl_running[date_key]
             loss_limit = cfg.topstep_daily_loss_usd
             safety_threshold = -loss_limit * cfg.daily_loss_safety_pct
